@@ -263,8 +263,8 @@ const ic=(n,cls='w-5 h-5',sw=2)=>`<svg class="${cls}" viewBox="0 0 24 24" fill="
 
 
 /* ===== SUPABASE CLIENT ===== */
-const SB_URL='https://emzgwkvkgojcaqngkatw.supabase.co';
-const SB_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtemd3a3ZrZ29qY2FxbmdrYXR3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE5NTQ4OTUsImV4cCI6MjA5NzUzMDg5NX0.Ng5vNIAA2N7_fvTVJT3Cw5i1FSczMR1Jfv6qp7PGXSk';
+const SB_URL='https://bxuhmyxfzoqvmukausjd.supabase.co';
+const SB_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4dWhteXhmem9xdm11a2F1c2pkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODgxMTgsImV4cCI6MjA5NDc2NDExOH0._-WHdcw2p1LR09imPkfGx7F7VfqwHJHkcW6b0hSD00k';
 const sb=supabase.createClient(SB_URL,SB_ANON,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
 function _unesc(s){if(!s)return s;return String(s).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");}
 function _mU(r){return(r||[]).map(p=>({id:p.id,firstName:_unesc(p.first_name)||'',lastName:_unesc(p.last_name)||'',email:p.email||'',phone:_unesc(p.phone)||'',position:_unesc(p.position)||'',department:_unesc(p.department)||'',role:p.role||'User',status:p.status||'Active',managerId:p.manager_id||null,managerHistory:p.manager_history||[],rules:p.rules||{past:true,future:true,edit:true},approval:p.approval_settings||{past:false,future:false,edited:false},docAccess:p.doc_access||{departments:{},locations:{}},questionsAccess:p.questions_access||false,password:'***'}));}
@@ -332,6 +332,60 @@ function _applyTickets(rows){
   const localOnly=(DB.tickets||[]).filter(t=>!fromSB.has(t.id));
   DB.tickets=[...visible,...localOnly];
   _invalidateNotifCache();
+}
+
+/* ════════ HRM SUPABASE SYNC (Approach A) ════════
+   Mirrors the existing _apply* and _sync pattern for the HRM module (attendance, leave, holidays,
+   leave types, hrm_config singleton, per-user u.hrm blob). snake_case columns to match the
+   existing tables; nested objects stored as jsonb. RLS is enforced server-side (see hrm_supabase.sql);
+   the client maps whatever rows the policies return. */
+// hrm_config is a single workspace-wide row (one HR policy set per deployment, like the seeded defaults).
+const _HRM_CFG_ID='singleton';
+function _applyHrmConfig(row){
+  if(!row)return;
+  // Merge server profiles/locationGeo over the seeded defaults; preserve locally-seeded role profiles etc.
+  // M2: skip the wholesale profiles replace while the HR Config page is open — its policy fields
+  //   (cfg-grace/cfg-auto/cfg-basis) are read straight from the DOM only at saveHrmConfig time and
+  //   aren't tracked by _lastUserAction, so a background loadFromSB would otherwise revert unsaved
+  //   edits. Mirrors the _AF working-copy guard (protect edits while the editor is on screen).
+  const _editingHrm=(typeof S!=='undefined'&&S.route==='hrmconfig');
+  if(!_editingHrm&&row.profiles&&typeof row.profiles==='object'&&Object.keys(row.profiles).length)DB.hrmConfig.profiles=row.profiles;
+  if(row.active_profile)DB.hrmConfig.activeProfile=row.active_profile;
+  if(row.location_geo&&typeof row.location_geo==='object')DB.hrmConfig.locationGeo=row.location_geo;
+}
+function _mAtt(rows){return(rows||[]).map(a=>({id:a.id,userId:a.user_id,date:a.date,clockIn:a.clock_in||null,clockOut:a.clock_out||null,inMin:a.in_min,outMin:a.out_min,hours:a.hours,status:a.status||'Present',leaveType:a.leave_type||null,flags:a.flags||[],inGeo:a.in_geo||null,outGeo:a.out_geo||null,autoClosed:a.auto_closed||false,note:a.note||'',createdAt:a.created_at}));}
+function _applyAttendance(rows){
+  if(!rows)return;
+  // Keep any local-only records the server window/RLS didn't return (just-clocked, older than window).
+  const mapped=_mAtt(rows);const fromSB=new Set(mapped.map(r=>r.id));
+  const localOnly=(DB.attendance||[]).filter(r=>!fromSB.has(r.id));
+  DB.attendance=[...mapped,...localOnly];
+}
+function _mLT(rows){return(rows||[]).map(t=>({id:t.id,profileId:t.profile_id,key:t.key,name:t.name,enabled:t.enabled!==false,unit:t.unit||'calendar',entitlement:t.entitlement||0,accrualPerMonth:t.accrual_per_month||0,eligibilityMonths:t.eligibility_months||0,paidTiers:t.paid_tiers||null,unpaid:t.unpaid||false,halfDayAllowed:t.half_day_allowed!==false,carryOver:t.carry_over||{enabled:false,maxDays:0,expiryMonths:0},oncePerEmployment:t.once_per_employment||false,birthdayMonthOnly:t.birthday_month_only||false,maxPerYear:t.max_per_year??null,nursingBreaks:t.nursing_breaks||false,notes:t.notes||'',...(Array.isArray(t.approval_flow)?{approvalFlow:t.approval_flow}:{})}));}
+function _applyLeaveTypes(rows){if(!rows)return;const mapped=_mLT(rows);if(mapped.length||((DB.leaveTypes||[]).length===0))DB.leaveTypes=mapped;}
+function _mLR(rows){return(rows||[]).map(r=>({id:r.id,userId:r.user_id,leaveTypeId:r.leave_type_id,leaveYear:r.leave_year,start:r.start_date,end:r.end_date,halfDay:r.half_day||false,halfDaySession:r.half_day_session||null,workingDays:r.working_days,reason:r.reason||'',unpaid:r.unpaid||false,flow:r.flow||[],stageIndex:r.stage_index??0,stage:r.stage||'manager',status:r.status||'Pending',needsAdmin:r.needs_admin||false,mgrDecision:r.mgr_decision||null,mgrNote:r.mgr_note||'',mgrAt:r.mgr_at||null,hrDecision:r.hr_decision||null,hrNote:r.hr_note||'',hrAt:r.hr_at||null,createdAt:r.created_at}));}
+function _applyLeaveRequests(rows){
+  if(!rows)return;
+  const mapped=_mLR(rows);const fromSB=new Set(mapped.map(r=>r.id));
+  const localOnly=(DB.leaveRequests||[]).filter(r=>!fromSB.has(r.id));
+  DB.leaveRequests=[...mapped,...localOnly];
+}
+function _mLB(rows){return(rows||[]).map(b=>({id:b.id,userId:b.user_id,leaveTypeId:b.leave_type_id,leaveYear:b.leave_year,entitled:b.entitled||0,accrued:b.accrued||0,carriedIn:b.carried_in||0,carriedExpiry:b.carried_expiry||null,used:b.used||0,pending:b.pending||0,lastAccruedMonth:b.last_accrued_month||null,...(b._carried?{_carried:true}:{})}));}
+function _applyLeaveBalances(rows){
+  if(!rows)return;
+  const mapped=_mLB(rows);const fromSB=new Set(mapped.map(b=>b.id));
+  const localOnly=(DB.leaveBalances||[]).filter(b=>!fromSB.has(b.id));
+  DB.leaveBalances=[...mapped,...localOnly];
+}
+function _mHol(rows){return(rows||[]).map(h=>({id:h.id,profileId:h.profile_id,date:h.date,name:h.name,locationId:h.location_id||null}));}
+function _applyHolidays(rows){if(!rows)return;DB.holidays=_mHol(rows);}
+// Strip base64 personalDocs.dataUrl from a u.hrm blob before syncing (mirrors saveDB's photo stripping).
+function _hrmStrip(hrm){
+  try{
+    const h=JSON.parse(JSON.stringify(hrm||{}));
+    if(Array.isArray(h.personalDocs))h.personalDocs.forEach(d=>{if(d&&typeof d.dataUrl==='string'&&d.dataUrl.startsWith('data:'))d.dataUrl=null;});
+    return h;
+  }catch(e){return hrm||{};}
 }
 
 // Per-tab lazy loaders — fetch only the opened tab's data (last 30 days), nothing on a timer.
@@ -526,6 +580,36 @@ async function loadFromSB(){
       if(error){console.error('[TK] error:',error.message);return;}
       _applyTickets(data);saveDB();rr();
     }).catch(e=>console.error('[TK] fetch failed:',e.message));
+
+  // ── HRM (Approach A): config singleton, reference tables fully, attendance windowed (90d). ──
+  // RLS restricts rows server-side; the client maps whatever comes back. Runs async (non-blocking)
+  // so a missing/locked HRM table never stalls the rest of the app. The _savedHrm snapshot above
+  // already protects per-user u.hrm; user_hrm is loaded separately below and re-merged the same way.
+  const _attCut=new Date(Date.now()-90*_DAY_MS).toISOString().slice(0,10);
+  Promise.allSettled([
+    sb.from('hrm_config').select('*').eq('id',_HRM_CFG_ID).maybeSingle(),
+    sb.from('leave_types').select('*'),
+    sb.from('holidays').select('*'),
+    sb.from('leave_requests').select('*').order('created_at',{ascending:false}),
+    sb.from('leave_balances').select('*'),
+    sb.from('attendance').select('*').gte('date',_attCut).order('date',{ascending:false}),
+    sb.from('user_hrm').select('*'),
+  ]).then(res=>{
+    const [cfg,lt,hol,lr,lb,att,uh]=res;
+    if(cfg.status==='fulfilled'&&!cfg.value.error&&cfg.value.data)_applyHrmConfig(cfg.value.data);
+    if(lt.status==='fulfilled'&&!lt.value.error)_applyLeaveTypes(lt.value.data);
+    if(hol.status==='fulfilled'&&!hol.value.error)_applyHolidays(hol.value.data);
+    if(lr.status==='fulfilled'&&!lr.value.error)_applyLeaveRequests(lr.value.data);
+    if(lb.status==='fulfilled'&&!lb.value.error)_applyLeaveBalances(lb.value.data);
+    if(att.status==='fulfilled'&&!att.value.error)_applyAttendance(att.value.data);
+    // user_hrm: re-merge the server blob onto DB.users (mirrors the _savedHrm snapshot pattern), then
+    //   re-run _ensureHrm so any missing defaults are backfilled. Never overwrites a user not returned.
+    if(uh.status==='fulfilled'&&!uh.value.error&&Array.isArray(uh.value.data)){
+      const byId={};uh.value.data.forEach(r=>{if(r&&r.user_id&&r.hrm&&typeof r.hrm==='object')byId[r.user_id]=r.hrm;});
+      DB.users.forEach(u=>{if(byId[u.id])u.hrm=byId[u.id];_ensureHrm(u);});
+    }
+    saveDB();rr();
+  }).catch(e=>console.warn('[HRM] load failed:',e.message));
 }
 async function _sync(){try{
   const results=await Promise.allSettled([
@@ -541,6 +625,16 @@ async function _sync(){try{
     sb.from('documents').upsert((DB.documents||[]).map(d=>({id:d.id,name:d.name,folder_id:d.folderId||null,type:d.type,scope:d.scope,url:d.url,storage_path:d.storagePath||null,file_type:d.fileType||null,file_size:d.fileSize||null,uploaded_by:d.uploadedBy||null,uploader_name:d.uploaderName||null,uploaded_at:d.uploadedAt})),{onConflict:'id'}),
     sb.from('questions').upsert((DB.questions||[]).map(q=>({id:q.id,text:q.text||'',type:q.type||'answer',options:q.options||[],photo:q.photo||false,approval:q.approval||false,comment:q.comment||false,is_public:q.isPublic!==false,created_by:q.createdBy||null,created_at:q.createdAt||new Date().toISOString()})),{onConflict:'id'}),
     (DB.tickets&&DB.tickets.length?sb.from('tickets').upsert(DB.tickets.map(t=>({id:t.id,title:t.title||'',description:t.description||'',priority:t.priority||'Medium',status:t.status||'Open',assigned_to:t.assignedTo||null,created_by:t.createdBy||null,checklist_id:t.checklistId||null,question_id:t.questionId||null,question_text:t.questionText||'',answer_given:t.answerGiven||'',submitter_id:t.submitterId||null,date:t.date||null,created_at:t.createdAt||new Date().toISOString(),resolved_at:t.resolvedAt||null,resolve_note:t.resolveNote||'',viewed_by:t.viewedBy||[]})),{onConflict:'id'}):Promise.resolve()),
+    // ── HRM (Approach A) ── single config row + reference tables + records + per-user blob.
+    // M1: reference tables (hrm_config/leave_types/holidays) are RLS-writable by HR/Admin only — gate so ordinary employees don't fire recurring rejected upserts.
+    ((isHR()||isAdmin())&&DB.hrmConfig&&Object.keys(DB.hrmConfig.profiles||{}).length?sb.from('hrm_config').upsert([{id:_HRM_CFG_ID,active_profile:DB.hrmConfig.activeProfile||'UAE',profiles:DB.hrmConfig.profiles||{},location_geo:DB.hrmConfig.locationGeo||{},updated_at:new Date().toISOString()}],{onConflict:'id'}):Promise.resolve()),
+    ((isHR()||isAdmin())&&DB.leaveTypes&&DB.leaveTypes.length?sb.from('leave_types').upsert(DB.leaveTypes.map(t=>({id:t.id,profile_id:t.profileId,key:t.key||null,name:t.name||'',enabled:t.enabled!==false,unit:t.unit||'calendar',entitlement:t.entitlement||0,accrual_per_month:t.accrualPerMonth||0,eligibility_months:t.eligibilityMonths||0,paid_tiers:t.paidTiers||null,unpaid:t.unpaid||false,half_day_allowed:t.halfDayAllowed!==false,carry_over:t.carryOver||{enabled:false,maxDays:0,expiryMonths:0},once_per_employment:t.oncePerEmployment||false,birthday_month_only:t.birthdayMonthOnly||false,max_per_year:t.maxPerYear??null,nursing_breaks:t.nursingBreaks||false,notes:t.notes||'',approval_flow:Array.isArray(t.approvalFlow)?t.approvalFlow:null})),{onConflict:'id'}):Promise.resolve()),
+    ((isHR()||isAdmin())&&DB.holidays&&DB.holidays.length?sb.from('holidays').upsert(DB.holidays.map(h=>({id:h.id,profile_id:h.profileId,date:h.date,name:h.name||'',location_id:h.locationId||null})),{onConflict:'id'}):Promise.resolve()),
+    ((DB.leaveRequests&&DB.leaveRequests.length)?sb.from('leave_requests').upsert(DB.leaveRequests.map(r=>({id:r.id,user_id:r.userId,leave_type_id:r.leaveTypeId,leave_year:r.leaveYear||null,start_date:r.start,end_date:r.end,half_day:r.halfDay||false,half_day_session:r.halfDaySession||null,working_days:r.workingDays,reason:r.reason||'',unpaid:r.unpaid||false,flow:r.flow||[],stage_index:r.stageIndex??0,stage:r.stage||'manager',status:r.status||'Pending',needs_admin:r.needsAdmin||false,mgr_decision:r.mgrDecision||null,mgr_note:r.mgrNote||'',mgr_at:r.mgrAt||null,hr_decision:r.hrDecision||null,hr_note:r.hrNote||'',hr_at:r.hrAt||null,created_at:r.createdAt||new Date().toISOString()})),{onConflict:'id'}):Promise.resolve()),
+    ((DB.leaveBalances&&DB.leaveBalances.length)?sb.from('leave_balances').upsert(DB.leaveBalances.map(b=>({id:b.id,user_id:b.userId,leave_type_id:b.leaveTypeId,leave_year:b.leaveYear,entitled:b.entitled||0,accrued:b.accrued||0,carried_in:b.carriedIn||0,carried_expiry:b.carriedExpiry||null,used:b.used||0,pending:b.pending||0,last_accrued_month:b.lastAccruedMonth||null})),{onConflict:'id'}):Promise.resolve()),
+    ((DB.attendance&&DB.attendance.length)?sb.from('attendance').upsert(DB.attendance.map(a=>({id:a.id,user_id:a.userId,date:a.date,clock_in:a.clockIn||null,clock_out:a.clockOut||null,in_min:a.inMin??null,out_min:a.outMin??null,hours:a.hours??null,status:a.status||'Present',leave_type:a.leaveType||null,flags:a.flags||[],in_geo:a.inGeo||null,out_geo:a.outGeo||null,auto_closed:a.autoClosed||false,note:a.note||'',created_at:a.createdAt||new Date().toISOString()})),{onConflict:'id'}):Promise.resolve()),
+    // user_hrm: per-user blob. Strip base64 personalDocs.dataUrl (mirrors saveDB's photo stripping) so the row stays small.
+    ((DB.users&&DB.users.length)?sb.from('user_hrm').upsert(DB.users.filter(u=>u.hrm).map(u=>({user_id:u.id,hrm:_hrmStrip(u.hrm),updated_at:new Date().toISOString()})),{onConflict:'user_id'}):Promise.resolve()),
   ]);
   const failed=results.filter(r=>r.status==='rejected');
   if(failed.length)console.warn('[Shiftly sync] '+failed.length+' table(s) failed:',failed.map(r=>r.reason?.message).join(', '));
@@ -801,9 +895,22 @@ function _myProfile(){const u=me();if(!u)return null;const id=u.hrm?.roleProfile
 // can(area,action) → bool. 1) Super Admin always true. 2) profile if assigned. 3) else base-role shim.
 function can(area,action){
   if(isAdmin())return true;
+  // Bug 3: an HR user (u.hrm.isHR) keeps a guaranteed floor over the HR areas even when an
+  // assigned role profile omits them — otherwise the Leave/Comp-off/HR-settings tabs silently
+  // vanish for HR. This mirrors the base-shim grant (_baseCan) but survives a role-profile.
+  if(_hrFloor(area,action))return true;
   const p=_myProfile();
   if(p){const a=p.perms?.[area];return !!(a&&a.actions&&a.actions[action]);}
   return _baseCan(area,action);
+}
+// HR-role floor: the minimum HR perms an isHR user always retains regardless of role profile.
+function _hrFloor(area,action){
+  if(!isHR())return false;
+  if(area==='leaveBalances')return action==='view'||action==='edit'||action==='grant';
+  if(area==='hrSettings')return action==='view'||action==='edit';
+  if(area==='leaveRequests')return action==='view'||action==='approve';
+  if(area==='attendance')return action==='view'||action==='edit';
+  return false;
 }
 // scopeOf(area) → 'none'|'self'|'team'|'department'|'location'|'everyone'
 function scopeOf(area){
@@ -6504,8 +6611,8 @@ function _hrmInit(){
 }
 
 /* ── Attendance status colors ── */
-const ATT_COLOR={Present:'#10B981',Absent:'#F43F5E',Leave:'#8B5CF6',HalfDay:'#F59E0B',OffDay:'#9CA3AF',Holiday:'#0EA5E9',AutoClosed:'#EAB308'};
-const ATT_LABEL={Present:'Present',Absent:'Absent',Leave:'On leave',HalfDay:'Half-day',OffDay:'Off-day',Holiday:'Public holiday',AutoClosed:'Auto-closed'};
+const ATT_COLOR={Present:'#10B981',Absent:'#F43F5E',Leave:'#8B5CF6',HalfDay:'#F59E0B',OffDay:'#9CA3AF',Holiday:'#0EA5E9',AutoClosed:'#EAB308',LeavePending:'#FBBF24'};
+const ATT_LABEL={Present:'Present',Absent:'Absent',Leave:'On leave',HalfDay:'Half-day',OffDay:'Off-day',Holiday:'Public holiday',AutoClosed:'Auto-closed',LeavePending:'Leave (pending)'};
 function _m2hm(m){if(m==null)return'—';m=((m%1440)+1440)%1440;return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');}
 
 /* Compute the display status for a user on a date (no record = derive off/holiday/absent/leave) */
@@ -6519,46 +6626,67 @@ function _dayStatus(userId,date){
   const hol=(DB.holidays||[]).find(h=>h.profileId===prof&&h.date===date);
   // leave approved covering this date?
   const lv=(DB.leaveRequests||[]).find(r=>r.userId===userId&&r.status==='Approved'&&r.start<=date&&r.end>=date);
+  // Bug 6: also surface PENDING (applied, not-yet-approved) leaves in a distinct amber state so the
+  //   employee sees their applied leave on the calendar before it is approved.
+  const pend=lv?null:(DB.leaveRequests||[]).find(r=>r.userId===userId&&r.status==='Pending'&&r.start<=date&&r.end>=date);
   if(hol)return{virtual:true,status:'Holiday',date,note:hol.name};
   if(off.has(dow))return{virtual:true,status:'OffDay',date};
   if(lv){const lt=ltById(lv.leaveTypeId);return{virtual:true,status:lv.halfDay?'HalfDay':'Leave',date,leaveType:lv.leaveTypeId,note:lt?lt.name:''};}
+  if(pend){const lt=ltById(pend.leaveTypeId);return{virtual:true,status:'LeavePending',date,leaveType:pend.leaveTypeId,note:(lt?lt.name:'Leave')+' — pending approval'};}
   if(date<todayISO())return{virtual:true,status:'Absent',date};
   return null;
 }
 
 /* ── Resolve the geofence a user must satisfy to clock in.
-   Precedence: assigned location (Locations + per-user) → profile office (backward compat) → none.
-   Returns {lat,lng,radius} when a geofence is ACTIVE, else null (no geofence → allow). ── */
+   The fence lives ONLY on the user's assigned Location (DB.hrmConfig.locationGeo[locId]).
+   Returns:
+     {lat,lng,radius}  → an ACTIVE fence the GPS must satisfy.
+     {misconfigured:true,reason} → assigned location exists but its geo is off/missing lat-lng.
+     null              → user has no assigned location at all.
+   Bug 1: the legacy profile-office fallback (activeProfile().office) is REMOVED — it was dead
+   (seeded enabled:false and never written by saveHrmConfig) and silently bypassed the fence. ── */
 function _activeGeofence(u){
   if(!u)return null;
   const locId=u.hrm?.locationId;
   if(locId){
     const g=(DB.hrmConfig?.locationGeo||{})[locId];
     if(g&&g.enabled&&g.lat!=null&&g.lng!=null)return{lat:g.lat,lng:g.lng,radius:g.radius||200};
+    // Assigned to a location whose fence is disabled or missing coordinates → misconfigured,
+    // NOT "no fence". Fail-closed treats this as a block (HR thinks it's enforced).
+    return{misconfigured:true,reason:locId};
   }
-  // Fallback: profile-level office geofence (legacy single-office config)
-  const off=activeProfile().office||{};
-  if(off.enabled&&off.lat!=null&&off.lng!=null)return{lat:off.lat,lng:off.lng,radius:off.radius||200};
   return null;
 }
 
 /* ════════ CLOCK IN / OUT ════════ */
-// Shared strict geofence gate for clock-in AND clock-out. Resolves the active geofence
-// (assigned-location geo → profile-office fallback). With no geofence, runs onPass(null)
-// immediately. With a geofence active, requires GPS inside the radius; blocks otherwise
-// with a clear message. `verb` ('in'/'out') only swaps the wording.
+// Shared FAIL-CLOSED geofence gate for clock-in AND clock-out (Bug 1, binding decision #3).
+// Resolves the active geofence from the user's assigned Location. Behaviour:
+//   • no assigned location            → BLOCK ("No office location configured — contact HR")
+//   • assigned but fence misconfigured → BLOCK ("No office location configured — contact HR")
+//   • fence active, GPS unavailable/denied/timeout → BLOCK (can't confirm location)
+//   • GPS accuracy worse than the radius → BLOCK (a low-accuracy fix can falsely fall inside)
+//   • GPS inside the radius           → onPass(geo)
+// `verb` ('in'/'out') only swaps the wording.
 function _withGeofence(verb,onPass){
   const gf=_activeGeofence(me());
-  if(!gf){onPass(null);return;}
   const word='clock '+verb;
-  if(!navigator.geolocation){toast('Location required to '+word+' — enable location access','err');return;}
+  // Fail-closed: no fence at all, or a misconfigured one, blocks the punch with a clear message.
+  if(!gf){toast('No office location configured — contact HR','err');return;}
+  if(gf.misconfigured){toast('No office location configured — contact HR','err');return;}
+  if(!navigator.geolocation){toast('Can\'t confirm your location to '+word+' — enable location access','err');return;}
   toast('Checking location…');
   navigator.geolocation.getCurrentPosition(
-    pos=>{const d=_distM(pos.coords.latitude,pos.coords.longitude,gf.lat,gf.lng);
-      if(d<=(gf.radius||200)){onPass({lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:pos.coords.accuracy});}
+    pos=>{
+      const radius=gf.radius||200;
+      // Accuracy floor: a fix whose ± error exceeds the fence radius can't be trusted to be inside.
+      if(pos.coords.accuracy!=null&&pos.coords.accuracy>radius){
+        toast('Can\'t confirm your location accurately enough to '+word+' (±'+Math.round(pos.coords.accuracy)+'m) — try again outdoors','err');return;
+      }
+      const d=_distM(pos.coords.latitude,pos.coords.longitude,gf.lat,gf.lng);
+      if(d<=radius){onPass({lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy:pos.coords.accuracy});}
       else{toast('You must be inside the office area to '+word+' ('+Math.round(d)+'m away)','err');}
     },
-    ()=>{toast('Location required to '+word+' — enable location access','err');},
+    ()=>{toast('Can\'t confirm your location to '+word+' — enable location access','err');},
     {enableHighAccuracy:true,timeout:8000,maximumAge:0}
   );
 }
@@ -6824,6 +6952,19 @@ function _stageStranded(req){
   const pred=_stageApprover(req,(req.stageIndex!=null?req.stageIndex:0));
   return !(DB.users||[]).some(x=>x.status==='Active'&&x.role!=='Admin'&&pred(x.id));
 }
+// Bug 5 (binding decision #5): terminal escalation fallback. When a stage's approver predicate
+//   matches ZERO active users, route the request to all active HR users AND all active Admins
+//   (never the submitter), set req.needsAdmin so the UI labels it, and notify them. Returns the
+//   number of fallback approvers reached — 0 means NOBODY can act (caller hard-toasts the submitter).
+function _escalateStranded(req,msg){
+  const submitterId=req.userId;
+  const fallback=(DB.users||[]).filter(x=>x.status==='Active'&&x.id!==submitterId&&(x.role==='Admin'||x.hrm?.isHR===true));
+  if(fallback.length){
+    req.needsAdmin=true;
+    if(_hnp('inapp_hrm_leave_submitted'))fallback.forEach(a=>_hrmNotify(a.id,msg));
+  }
+  return fallback.length;
+}
 // §2: counts are driven by the current-stage approver (handles custom flows incl. named approvers).
 function _mgrPendingCount(){return (DB.leaveRequests||[]).filter(r=>r.status==='Pending'&&_stageTab(r)==='manager'&&_canActOn(r)).length;}
 function _hrPendingCount(){return (DB.leaveRequests||[]).filter(r=>r.status==='Pending'&&_stageTab(r)==='hr'&&_canActOn(r)).length;}
@@ -6832,16 +6973,11 @@ function _myLeaveView(){
   const u=me();const prof=userProfileId(u);
   const types=_typesFor(prof).filter(t=>t.enabled);
   const yr=_leaveYearOf(u,todayISO());
-  const cards=types.map(lt=>{
-    if(_isCompOffLt(lt)){
-      // §3a: comp-off balance comes from the dedicated HR ledger, not the leave-balance row.
-      const rem=_compOffRemaining(u.id);
-      return `<div style="background:#fff;border-radius:16px;border:1px solid #ECEDF0;padding:14px">
-        <div style="font-size:13px;font-weight:700;margin-bottom:6px">${esc(lt.name)}</div>
-        <div class="fd" style="font-size:24px;font-weight:800;color:#15171C">${rem}<span style="font-size:13px;color:#9CA3AF;font-weight:600"> days</span></div>
-        <div style="font-size:11px;color:#9CA3AF;margin-top:8px">HR-managed perk · granted & removed by HR (not applied for here)</div>
-      </div>`;
-    }
+  const cards=types
+    // Bug 2: comp-off is HR-managed only (granted/removed in HR Config → Comp-off) and is never
+    //   applied-for in the employee flow — so its balance card is removed from the employee view.
+    .filter(lt=>!_isCompOffLt(lt))
+    .map(lt=>{
     const b=_balanceReadonly(u.id,lt.id,yr);
     const rem=_balRemaining(b);const ent=_r2((b.entitled||0)+(b.carriedIn||0));
     const pct=ent>0?Math.min(100,Math.round((rem/ent)*100)):0;
@@ -6881,7 +7017,14 @@ App.applyLeave=()=>{
     </div>
     <div class="flex gap-2 mt-5"><button onclick="App.closeModal()" style="flex:1;padding:12px;border-radius:12px;border:1.5px solid #ECEDF0;background:#fff;font-weight:600;font-size:14px;cursor:pointer">Cancel</button><button onclick="App.submitLeave()" style="flex:1;padding:12px;border-radius:12px;background:#15171C;color:#fff;font-weight:600;font-size:14px;border:none;cursor:pointer">Submit</button></div>
   </div>`);
+  // Bug 4 (binding decision #2): the leave START date must be TODAY — no backdating, no future
+  //   start. Lock the start input to today; the end input may not start before today (multi-day
+  //   leave that STARTS today is still allowed: end >= start).
+  const _t=todayISO();
+  const _se=$('#lv-start');if(_se){_se.min=_t;_se.max=_t;_se.value=_t;}
+  const _ee=$('#lv-end');if(_ee){_ee.min=_t;}
   const upd=()=>{const tId=$('#lv-type').value,lt=ltById(tId);const start=$('#lv-start').value,end=$('#lv-end').value,half=togV('lv-half');
+    if(start!==_t){$('#lv-preview').textContent='Leave must start today — the start date cannot be in the past or future.';return;}
     if(!start||!end||end<start){$('#lv-preview').textContent='Select a valid date range.';return;}
     const wd=_workingDaysBetween(u.id,start,end,half&&start===end);
     const b=_balanceReadonly(u.id,tId,_leaveYearOf(u,start));const rem=_balRemaining(b);
@@ -6897,6 +7040,13 @@ App.submitLeave=()=>{
   if(_isCompOffLt(lt)){toast('Comp-off is granted by HR and cannot be applied for','err');return;} // §3a defense-in-depth
   const start=$('#lv-start')?.value,end=$('#lv-end')?.value;const half=togV('lv-half');const reason=($('#lv-reason')?.value||'').trim();
   if(!start||!end||end<start){toast('Invalid date range','err');return;}
+  // Bug 4 (binding decision #2): leave START must be today — block backdated and future starts.
+  //   Multi-day leave starting today is still allowed (end >= start, enforced above).
+  const _today=todayISO();
+  if(start<_today){toast('You cannot apply for leave that started in the past','err');return;}
+  if(start>_today){toast('Leave must start today — future start dates are not allowed','err');return;}
+  // O8: a leave longer than the attendance/working-day guard (400 days) would write only partially.
+  if(_isoAdd(start,400)<=end){toast('Leave range is too long — please split it into shorter requests','err');return;}
   if(lt.birthdayMonthOnly&&!_birthdayOk(u,start)){toast('Birthday leave only valid in your birthday month','err');return;}
   // M1: half-day applies to a single date only — never silently drop the toggle on a range.
   if(half&&start!==end){toast('Half-day only for a single date','err');return;}
@@ -6923,14 +7073,24 @@ App.submitLeave=()=>{
   const reqLeaveYear=_leaveYearOf(u,start);
   const req={id:uid('lv'),userId:u.id,leaveTypeId:tId,leaveYear:reqLeaveYear,start,end,halfDay,halfDaySession:null,workingDays:wd,reason,unpaid:isUnpaid,
     flow,stageIndex:0,stage:firstStage.type, // `stage` kept (=stage type) for UI/data back-compat
-    status:'Pending',mgrDecision:null,mgrNote:'',mgrAt:null,hrDecision:null,hrNote:'',hrAt:null,createdAt:new Date().toISOString()};
+    status:'Pending',needsAdmin:false,mgrDecision:null,mgrNote:'',mgrAt:null,hrDecision:null,hrNote:'',hrAt:null,createdAt:new Date().toISOString()};
+  // Bug 5 (binding decision #5): does ANY active user (other than the submitter) approve the first stage?
+  const pred=_stageApprover(req,0);
+  const directApprovers=DB.users.filter(x=>x.status==='Active'&&x.id!==u.id&&pred(x.id));
+  if(!directApprovers.length){
+    // No designated approver for the opening stage → escalate to HR + Admins (terminal fallback).
+    const reached=_escalateStranded(req,'⚠️ '+fullName(u)+'\'s '+lt.name+' ('+fmtD(start)+'→'+fmtD(end)+') has no approver for its first stage — please review.');
+    if(!reached){
+      // Nobody at all can act — refuse to strand the request silently.
+      toast('No approver configured — contact admin','err');return;
+    }
+  }
   DB.leaveRequests.unshift(req);
   if(!isUnpaid)b.pending=_r2((b.pending||0)+wd); // reserve (unpaid types never touch the ledger)
   hlog('Leave requested',fullName(u)+': '+lt.name+' '+start+'→'+end+' ('+wd+'d)');
   saveDB();closeModal();toast('Leave request submitted ✓');
   // notify the first stage's approver(s) resolved via _stageApprover (gated by §4 in-app toggle)
-  const pred=_stageApprover(req,0);
-  if(_hnp('inapp_hrm_leave_submitted'))DB.users.filter(x=>pred(x.id)&&x.id!==u.id).forEach(a=>_hrmNotify(a.id,'📝 '+fullName(u)+' requested '+lt.name+' ('+fmtD(start)+'→'+fmtD(end)+') — your approval needed'));
+  if(_hnp('inapp_hrm_leave_submitted'))directApprovers.forEach(a=>_hrmNotify(a.id,'📝 '+fullName(u)+' requested '+lt.name+' ('+fmtD(start)+'→'+fmtD(end)+') — your approval needed'));
   if(_hnpEmail('email_hrm_leave_submitted'))queueEmail('hrm_leave_submitted',u.id,null,start,{type:lt.name});
   rr();
 };
@@ -6994,8 +7154,14 @@ App.decideLeave=(id,action,expectedStageIndex)=>{
     r.stageIndex=si+1;r.stage=nextStage.type;
     hlog('Leave approved (stage '+(si+1)+': '+_stageLabel(curStage)+')',fullName(emp)+': '+(lt?lt.name:''));
     const pred=_stageApprover(r,si+1);
+    const nextApprovers=DB.users.filter(x=>x.status==='Active'&&x.id!==emp.id&&pred(x.id));
+    // Bug 5 (binding decision #5): if the NEXT stage has no designated approver, escalate to HR +
+    //   Admins (terminal fallback) instead of stranding the request unseen.
+    if(!nextApprovers.length){
+      _escalateStranded(r,'⚠️ '+fullName(emp)+'\'s '+(lt?lt.name:'leave')+' reached a stage with no approver — please review.');
+    }else{r.needsAdmin=false;}
     // next-stage approvers = same "approval needed" event as submission (gated by §4)
-    if(_hnp('inapp_hrm_leave_submitted'))DB.users.filter(x=>pred(x.id)&&x.id!==emp.id).forEach(a=>_hrmNotify(a.id,'📝 '+fullName(emp)+'\'s '+(lt?lt.name:'leave')+' needs your approval (stage '+(si+2)+')'));
+    if(_hnp('inapp_hrm_leave_submitted'))nextApprovers.forEach(a=>_hrmNotify(a.id,'📝 '+fullName(emp)+'\'s '+(lt?lt.name:'leave')+' needs your approval (stage '+(si+2)+')'));
     if(_hnpEmail('email_hrm_leave_submitted'))queueEmail('hrm_leave_submitted',emp.id,null,r.start,{type:lt?lt.name:''});
     _hrmNotify(emp.id,'✓ Your '+(lt?lt.name:'leave')+' passed '+_stageLabel(curStage)+' — pending '+_stageLabel(nextStage)+'.'); // progress note (informational)
   }else{
@@ -7117,7 +7283,12 @@ function hrmConfigPage(){
     </div>`;
   }else if(tab==='types'){
     const types=_typesFor(profId);
-    body=`<div class="space-y-2">${types.map(lt=>`<div style="background:#fff;border-radius:14px;border:1px solid #ECEDF0;padding:14px">
+    // O14: India leave types intentionally seed with entitlement 0 (HR fills statutory values per
+    //   company policy) — surface a note so an empty entitlement isn't mistaken for "config broken".
+    const zeroNote=(profId==='India'||types.some(t=>t.enabled&&(t.entitlement||0)===0&&(t.accrualPerMonth||0)===0&&!_isCompOffLt(t)))
+      ?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:11px 14px;margin-bottom:8px;font-size:12px;color:#92400E">Note: types seeded with <strong>0 entitlement</strong> are placeholders — set each type's entitlement &amp; accrual here to match your company policy. They are not a bug.</div>`
+      :'';
+    body=`<div class="space-y-2">${zeroNote}${types.map(lt=>`<div style="background:#fff;border-radius:14px;border:1px solid #ECEDF0;padding:14px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div><div style="font-size:14px;font-weight:700">${esc(lt.name)}${lt.enabled?'':' <span style="font-size:10px;color:#9CA3AF">(disabled)</span>'}</div><div style="font-size:11px;color:#9CA3AF">Entitlement ${lt.entitlement}${lt.accrualPerMonth?(' · '+lt.accrualPerMonth+'/mo'):''} · ${lt.unit} days${lt.carryOver?.enabled?(' · carry '+lt.carryOver.maxDays):''}</div></div><button onclick="App.editLeaveType('${lt.id}')" style="font-size:12px;font-weight:600;padding:6px 12px;border-radius:9px;border:1px solid #ECEDF0;background:#fff;cursor:pointer">Edit</button></div>
     </div>`).join('')}</div>`;
   }else if(tab==='holidays'){
@@ -7265,6 +7436,12 @@ App._compOffApply=()=>{
   if(!sel.length){toast('Select at least one employee','err');return;}
   if(!days||isNaN(days)){toast('Enter a non-zero number of days','err');return;}
   if(!reason){toast('Reason required','err');return;}
+  // O15: warn (and require confirmation) when a removal exceeds an employee's remaining comp-off —
+  //   the ledger floors at 0, so an over-removal would otherwise be silently swallowed.
+  if(days<0){
+    const over=sel.map(uId=>uById(uId)).filter(Boolean).filter(u=>_compOffRemaining(u.id)<Math.abs(days));
+    if(over.length&&!confirm('Removing '+Math.abs(days)+' day(s) exceeds the current comp-off balance for '+over.length+' employee(s) ('+over.map(u=>fullName(u)).join(', ')+'). Their balance will floor at 0. Continue?'))return;
+  }
   sel.forEach(uId=>{const u=uById(uId);if(!u)return;_ensureHrm(u);u.hrm.compOff.push({id:uid('co'),days:_r2(days),reason,expiry:(days>0?(exp||null):null),at:new Date().toISOString(),by:fullName(me())});hlog('Comp-off '+(days>0?'+':'')+days,fullName(u)+': '+reason);});
   saveDB();toast((days>0?'Granted ':'Removed ')+Math.abs(days)+' comp-off day(s) for '+sel.length+' employee(s) ✓');rr();
 };
@@ -7280,15 +7457,24 @@ App.saveHrmConfig=(profId)=>{
   // §2: persist the approval flow built in _approvalFlowEditor (working copy on _AF).
   if(Array.isArray(_AF))p.approvalFlow=_AF.filter(s=>s&&s.type).map((s,i)=>({id:s.id||('st'+i),type:s.type,...(s.type==='role'?{role:s.role||'hr'}:{}),...(s.type==='user'?{userId:s.userId||null}:{})})).filter(s=>s.type!=='user'||s.userId);
   if(!Array.isArray(p.approvalFlow)||!p.approvalFlow.length)p.approvalFlow=_normalizeFlow(p);
+  // Bug 3: clear the working copy so the next editor render reseeds from the just-saved profile.
+  _AF=null;_AFProfId=null;
   hlog('HR config saved',profId);saveDB();toast('Configuration saved ✓');rr();
 };
 
 /* ════════ APPROVAL FLOW EDITOR (§2) — inside HR Config policy tab, gated by hrSettings.edit ════════ */
 // Working copy mutated by the editor; flushed to prof.approvalFlow in saveHrmConfig.
 let _AF=null;
+let _AFProfId=null; // Bug 3: which profile the working copy belongs to (guards against clobbering edits).
 function _approvalFlowEditor(prof){
-  // Seed the working copy from the profile each time the policy tab renders fresh.
-  _AF=JSON.parse(JSON.stringify(_normalizeFlow(prof)));
+  // Bug 3 (binding decision #7): do NOT reseed the working copy when an in-progress copy already
+  //   exists for THIS open profile — an incidental rr()/re-render between editing the flow and
+  //   clicking "Save configuration" must not silently discard unsaved stage edits. Reseed only when
+  //   there is no working copy yet, or the editor switched to a different profile.
+  if(!Array.isArray(_AF)||_AFProfId!==(prof&&prof.id)){
+    _AF=JSON.parse(JSON.stringify(_normalizeFlow(prof)));
+    _AFProfId=prof&&prof.id||null;
+  }
   return `<div style="background:#fff;border-radius:16px;border:1px solid #ECEDF0;padding:16px">
     <h3 class="fd font-bold text-sm mb-1">Approval flow</h3>
     <p style="font-size:11px;color:#9CA3AF;margin-bottom:10px">Requests move through these stages in order. Each stage is approved (advance) or rejected (stops & releases the days). Super Admin can act at any stage.</p>
@@ -7500,6 +7686,8 @@ function _grantCompOff(u,days,reason,exp){
   days=Number(days);
   if(!days||isNaN(days)){toast('Enter a non-zero number of days','err');return false;}
   if(!reason){toast('Reason required','err');return false;}
+  // O15: warn before an over-removal silently floors the balance at 0.
+  if(days<0&&_compOffRemaining(u.id)<Math.abs(days)&&!confirm('Removing '+Math.abs(days)+' day(s) exceeds '+fullName(u)+'\'s comp-off balance ('+_compOffRemaining(u.id)+'). Their balance will floor at 0. Continue?'))return false;
   _ensureHrm(u);
   u.hrm.compOff.push({id:uid('co'),days:_r2(days),reason,expiry:(days>0?(exp||null):null),at:new Date().toISOString(),by:fullName(me())});
   hlog('Comp-off '+(days>0?'+':'')+days,fullName(u)+': '+reason);
