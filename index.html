@@ -215,6 +215,39 @@ function toast(msg,type='ok'){
   clearTimeout(_toast);_toast=setTimeout(()=>{if(t)t.innerHTML='';},2800);
 }
 
+/* ═══════════════ C1 — CONSISTENT ERROR SURFACING ═══════════════
+   ONE pattern for save / permission / network failures so handlers never fail silently.
+   - _syncErr(label)  → a .catch handler for a targeted single-row Supabase write.
+   - _opErr(e,ctx)    → surface a caught exception from a user-initiated op.
+   - _reportSyncResults(results,labels) → for the _sync Promise.allSettled batch; toasts ONCE
+       (debounced ≤1/10s) naming the table(s) that failed so the user knows their change didn't persist. */
+let _lastSyncErrToast=0;
+function _isRlsErr(e){const m=(e&&(e.message||e.error_description||''))+'';return /row-level security|permission denied|violates|not authorized|forbidden|RLS/i.test(m);}
+// .catch / .then-error handler for a TARGETED write. Returns a fn so it can be passed directly to .catch.
+function _syncErr(label){return (e)=>{
+  console.warn('[sync]',label,e?.message||e);
+  const rls=_isRlsErr(e);
+  toast(rls?('Couldn\'t save '+(label||'changes')+' — you may not have permission'):('Couldn\'t save '+(label||'changes')+' — check your connection'),'err');
+};}
+// Surface a caught exception from a user-initiated operation (validation already toasts its own message).
+function _opErr(e,ctx){console.warn('[op]',ctx,e?.message||e);toast((ctx?(ctx+' failed'):'Something went wrong')+(_isRlsErr(e)?' — permission denied':''),'err');}
+// Batch reporter for _sync()'s Promise.allSettled. Debounced so a flapping connection can't spam.
+function _reportSyncResults(results,labels){
+  const failedLabels=[];
+  results.forEach((r,i)=>{
+    const err=r.status==='rejected'?r.reason:(r.value&&r.value.error);
+    if(err)failedLabels.push(labels[i]||('table '+i));
+  });
+  if(!failedLabels.length)return;
+  console.warn('[sync] failed:',failedLabels.join(', '));
+  const now=Date.now();
+  if(now-_lastSyncErrToast<10000)return; // debounce: at most one sync-error toast per 10s
+  _lastSyncErrToast=now;
+  const uniq=[...new Set(failedLabels)];
+  const shown=uniq.slice(0,3).join(', ')+(uniq.length>3?(' +'+(uniq.length-3)+' more'):'');
+  toast('Some changes didn\'t save ('+shown+') — check your connection or permissions','err');
+}
+
 /* ===== ICONS ===== */
 const I={
   grid:'<path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/>',
@@ -319,7 +352,7 @@ function _applyDocuments(docRows){
   // Also drop any document whose folder is tombstoned — guards against orphaned docs
   // reappearing after a folder delete + refresh (§11).
   const _delFolders=new Set(DB.folders_deleted||[]);
-  DB.documents=docRows.filter(d=>!_delDocs.has(d.id)&&!_delFolders.has(d.folder_id||'')).map(d=>({id:d.id,name:d.name,folderId:d.folder_id||null,type:d.type,scope:d.scope,url:d.url,storagePath:d.storage_path||null,fileType:d.file_type||null,fileSize:d.file_size||null,uploadedBy:d.uploaded_by||null,uploaderName:d.uploader_name||null,uploadedAt:d.uploaded_at}));
+  DB.documents=docRows.filter(d=>!_delDocs.has(d.id)&&!_delFolders.has(d.folder_id||'')).map(d=>({id:d.id,name:d.name,folderId:d.folder_id||null,type:d.type,scope:d.scope,url:d.url,storagePath:d.storage_path||null,fileType:d.file_type||null,fileSize:d.file_size||null,uploadedBy:d.uploaded_by||null,uploaderName:d.uploader_name||null,uploadedAt:d.uploaded_at,approvalStatus:d.approval_status||null,approverId:d.approver_id||null,decidedBy:d.decided_by||null,decidedAt:d.decided_at||null,decisionNote:d.decision_note||null}));
 }
 function _applyTickets(rows){
   const {_uid,_isAdmin,_isSubAdmin}=_roleCtx();
@@ -602,8 +635,13 @@ async function loadFromSB(){
     sb.from('leave_balances').select('*'),
     sb.from('attendance').select('*').gte('date',_attCut).order('date',{ascending:false}),
     sb.from('user_hrm').select('*'),
+    // B2b: role profiles — read for EVERY user (workspace_settings is read-all-authenticated) so permissions resolve.
+    sb.from('workspace_settings').select('value').eq('key','role_profiles').maybeSingle(),
+    // ONBOARDING: templates (read-all-authenticated) + instances (RLS-filtered to what the user may see).
+    sb.from('onboarding_templates').select('*').order('created_at',{ascending:false}),
+    sb.from('onboarding_instances').select('*').order('created_at',{ascending:false}),
   ]).then(res=>{
-    const [cfg,lt,hol,lr,lb,att,uh]=res;
+    const [cfg,lt,hol,lr,lb,att,uh,rp,ot,oi]=res;
     if(cfg.status==='fulfilled'&&!cfg.value.error&&cfg.value.data)_applyHrmConfig(cfg.value.data);
     if(lt.status==='fulfilled'&&!lt.value.error)_applyLeaveTypes(lt.value.data);
     if(hol.status==='fulfilled'&&!hol.value.error)_applyHolidays(hol.value.data);
@@ -615,6 +653,20 @@ async function loadFromSB(){
     if(uh.status==='fulfilled'&&!uh.value.error&&Array.isArray(uh.value.data)){
       const byId={};uh.value.data.forEach(r=>{if(r&&r.user_id&&r.hrm&&typeof r.hrm==='object')byId[r.user_id]=r.hrm;});
       DB.users.forEach(u=>{if(byId[u.id])u.hrm=byId[u.id];_ensureHrm(u);});
+    }
+    // B2b: apply synced role profiles. Server is the source of truth for the shared set; merge over the
+    //   local copy so an admin's edits (and the seeded built-ins) reach all devices. Re-seed afterward so
+    //   any missing built-in preset is restored without clobbering server-customised ones.
+    if(rp&&rp.status==='fulfilled'&&!rp.value.error&&rp.value.data&&rp.value.data.value&&typeof rp.value.data.value==='object'){
+      DB.roleProfiles={...(DB.roleProfiles||{}),...rp.value.data.value};
+      _seedRoleProfiles();
+    }
+    // ONBOARDING: server is the source of truth for the rows the user can read. Map snake→camel (steps jsonb passes through).
+    if(ot&&ot.status==='fulfilled'&&!ot.value.error&&Array.isArray(ot.value.data)){
+      DB.onboardingTemplates=ot.value.data.map(t=>({id:t.id,name:t.name||'',description:t.description||'',steps:Array.isArray(t.steps)?t.steps:[],active:t.active!==false,createdBy:t.created_by||null,createdAt:t.created_at||null}));
+    }
+    if(oi&&oi.status==='fulfilled'&&!oi.value.error&&Array.isArray(oi.value.data)){
+      DB.onboardingInstances=oi.value.data.map(i=>({id:i.id,templateId:i.template_id||null,userId:i.user_id,status:i.status||'active',steps:Array.isArray(i.steps)?i.steps:[],createdBy:i.created_by||null,createdAt:i.created_at||null,completedAt:i.completed_at||null}));
     }
     saveDB();rr();
   }).catch(e=>console.warn('[HRM] load failed:',e.message));
@@ -630,7 +682,7 @@ async function _sync(){try{
     sb.from('notifications').upsert(DB.notifications.map(n=>({id:n.id,user_id:n.userId,text:n.text,read:n.read||false,created_at:n.time||new Date().toISOString()})),{onConflict:'id'}),
     sb.from('feedback').upsert((DB.feedback||[]).map(fb=>({id:fb.id,checklist_id:fb.checklistId||null,user_id:fb.userId,manager_id:fb.managerId,date:fb.date||null,title:fb.title||null,type:fb.type||'General',text:fb.text||'',priority:fb.priority||'Low',task_name:fb.taskName||null,level:fb.level||'direct',status:fb.status||'Sent',acknowledged:fb.acknowledged||false,acknowledged_at:fb.acknowledgedAt||null,reply:fb.reply||null,replied_at:fb.repliedAt||null,replies:fb.replies||[],created_at:fb.createdAt||new Date().toISOString()})),{onConflict:'id'}),
     sb.from('doc_folders').upsert((DB.folders||[]).map(f=>({id:f.id,name:f.name,parent_id:f.parentId||null,type:f.type,scope:f.scope,created_by:f.createdBy||null,created_at:f.createdAt})),{onConflict:'id'}),
-    sb.from('documents').upsert((DB.documents||[]).map(d=>({id:d.id,name:d.name,folder_id:d.folderId||null,type:d.type,scope:d.scope,url:d.url,storage_path:d.storagePath||null,file_type:d.fileType||null,file_size:d.fileSize||null,uploaded_by:d.uploadedBy||null,uploader_name:d.uploaderName||null,uploaded_at:d.uploadedAt})),{onConflict:'id'}),
+    sb.from('documents').upsert((DB.documents||[]).map(d=>({id:d.id,name:d.name,folder_id:d.folderId||null,type:d.type,scope:d.scope,url:d.url,storage_path:d.storagePath||null,file_type:d.fileType||null,file_size:d.fileSize||null,uploaded_by:d.uploadedBy||null,uploader_name:d.uploaderName||null,uploaded_at:d.uploadedAt,approval_status:d.approvalStatus||null,approver_id:d.approverId||null,decided_by:d.decidedBy||null,decided_at:d.decidedAt||null,decision_note:d.decisionNote||null})),{onConflict:'id'}),
     sb.from('questions').upsert((DB.questions||[]).map(q=>({id:q.id,text:q.text||'',type:q.type||'answer',options:q.options||[],photo:q.photo||false,approval:q.approval||false,comment:q.comment||false,is_public:q.isPublic!==false,created_by:q.createdBy||null,created_at:q.createdAt||new Date().toISOString()})),{onConflict:'id'}),
     (DB.tickets&&DB.tickets.length?sb.from('tickets').upsert(DB.tickets.map(t=>({id:t.id,title:t.title||'',description:t.description||'',priority:t.priority||'Medium',status:t.status||'Open',assigned_to:t.assignedTo||null,created_by:t.createdBy||null,checklist_id:t.checklistId||null,question_id:t.questionId||null,question_text:t.questionText||'',answer_given:t.answerGiven||'',submitter_id:t.submitterId||null,date:t.date||null,created_at:t.createdAt||new Date().toISOString(),resolved_at:t.resolvedAt||null,resolve_note:t.resolveNote||'',viewed_by:t.viewedBy||[]})),{onConflict:'id'}):Promise.resolve()),
     // ── HRM (Approach A) ── single config row + reference tables + records + per-user blob.
@@ -643,9 +695,20 @@ async function _sync(){try{
     ((DB.attendance&&DB.attendance.length)?sb.from('attendance').upsert(DB.attendance.map(a=>({id:a.id,user_id:a.userId,date:a.date,clock_in:a.clockIn||null,clock_out:a.clockOut||null,in_min:a.inMin??null,out_min:a.outMin??null,hours:a.hours??null,status:a.status||'Present',leave_type:a.leaveType||null,flags:a.flags||[],in_geo:a.inGeo||null,out_geo:a.outGeo||null,auto_closed:a.autoClosed||false,note:a.note||'',created_at:a.createdAt||new Date().toISOString()})),{onConflict:'id'}):Promise.resolve()),
     // user_hrm: per-user blob. Strip base64 personalDocs.dataUrl (mirrors saveDB's photo stripping) so the row stays small.
     ((DB.users&&DB.users.length)?sb.from('user_hrm').upsert(DB.users.filter(u=>u.hrm).map(u=>({user_id:u.id,hrm:_hrmStrip(u.hrm),updated_at:new Date().toISOString()})),{onConflict:'user_id'}):Promise.resolve()),
+    // B2b: role profiles (permission bundles) sync via workspace_settings (key 'role_profiles', jsonb).
+    //   WRITE is gated on isAdmin() — only the Super Admin edits Access Control (mirrors workspace_settings
+    //   RLS write-elevated + M1 reference-table gating) so ordinary users never fire rejected upserts.
+    //   READ happens for everyone in loadFromSB so each user's can() resolves against the latest profiles.
+    ((isAdmin()&&DB.roleProfiles&&Object.keys(DB.roleProfiles).length)?sb.from('workspace_settings').upsert({key:'role_profiles',value:DB.roleProfiles,updated_at:new Date().toISOString()},{onConflict:'key'}):Promise.resolve()),
+    // ONBOARDING: templates are HR/Admin-writable (RLS _is_hr) — gate on can('onboarding','manage') so ordinary
+    //   users don't fire rejected upserts (mirrors the role_profiles admin-gate). Instances: only push the rows
+    //   the caller may write under RLS (own hire, or elevated/manager-of) so plain employees never get rejected.
+    ((can('onboarding','manage')&&DB.onboardingTemplates&&DB.onboardingTemplates.length)?sb.from('onboarding_templates').upsert(DB.onboardingTemplates.map(_otRow),{onConflict:'id'}):Promise.resolve()),
+    (()=>{const rows=(DB.onboardingInstances||[]).filter(i=>i.userId===S.uid||isAdmin()||isHR()||scopeFilter('onboarding')(i.userId));return rows.length?sb.from('onboarding_instances').upsert(rows.map(_obRow),{onConflict:'id'}):Promise.resolve();})(),
   ]);
-  const failed=results.filter(r=>r.status==='rejected');
-  if(failed.length)console.warn('[Shiftly sync] '+failed.length+' table(s) failed:',failed.map(r=>r.reason?.message).join(', '));
+  // C1: surface persistence failures (RLS rejections / network) to the user, debounced. Labels MUST
+  //   match the upsert order above. Resolved-Promise placeholders (gated/empty tables) report no error.
+  _reportSyncResults(results,['departments','locations','checklists','submissions','approvals','audit log','notifications','feedback','folders','documents','questions','tickets','HR config','leave types','holidays','leave requests','leave balances','attendance','employee HR data','role profiles','onboarding templates','onboarding instances']);
 }catch(e){console.warn('[Shiftly sync error]',e.message);}}
 
 /* ===== STATUS CHIPS ===== */
@@ -667,7 +730,10 @@ let DB={
   holidays:[],      // public holiday calendar
   hrmAudit:[],      // HRM audit log (local-only — NOT audit_logs)
   announcements:[], // §10 — company announcements (FRONTEND-ONLY, never synced). {id,title,body,deptTarget|null,locTarget|null,createdBy,createdAt}
-  roleProfiles:{}   // PERMISSIONS — named permission bundles (frontend-only, seeded by _seedRoleProfiles)
+  roleProfiles:{},  // PERMISSIONS — named permission bundles (frontend-only, seeded by _seedRoleProfiles)
+  // ── ONBOARDING — dedicated templates + per-hire instances (sync to onboarding_templates/onboarding_instances) ──
+  onboardingTemplates:[], // [{id,name,description,steps:[{id,title,kind,assignee,requiresApproval}],active,createdBy,createdAt}]
+  onboardingInstances:[]  // [{id,templateId,userId,status,steps:[{...snapshot,status,docId,decidedBy,decidedAt,note,doneBy,doneAt}],createdBy,createdAt,completedAt}]
 };
 function log(a,b,c){
   if(!a||!b)return;
@@ -840,26 +906,32 @@ function _ensureHrm(u){
    - _baseCan()/_baseScope(): back-compat shim = TODAY's exact access
      for any user with NO assigned profile. This is the safety net.
    ═══════════════════════════════════════════════════════════════ */
+// `group` partitions the Access-Control editor into labelled sections (rendering only — does not
+// affect can()/scope resolution). Every `actions` entry below is an action that is actually enforced
+// by a can(area,action) gate somewhere in this file (verified by grep — see B2a matrix); the editor
+// is fully data-driven from this list so a toggle exists for every gate the app checks.
+const PERM_GROUPS=['People & Org','Leave & Attendance','Tasks & Tickets','Content','System'];
 const PERM_AREAS=[
-  {key:'dashboard',label:'Dashboard',desc:'The landing overview',actions:['view'],scoped:false},
-  {key:'attendance',label:'Attendance',desc:'Clock-in/out records & calendar',actions:['view','edit','download'],scoped:true},
-  {key:'leaveRequests',label:'Leave — requests',desc:'Applying for and acting on leave',actions:['view','create','approve','download'],scoped:true},
-  {key:'leaveBalances',label:'Leave — balances',desc:"People's leave day balances",actions:['view','edit','grant'],scoped:true},
-  {key:'hrSettings',label:'HR settings',desc:'Leave policy, types, holidays, approval flows',actions:['view','edit'],scoped:false},
-  {key:'employees',label:'Employees / Users',desc:'The people directory',actions:['view','create','edit','delete','assign','manage'],scoped:true},
-  {key:'hierarchy',label:'Hierarchy / Org chart',desc:'The reporting tree',actions:['view'],scoped:true},
-  {key:'checklists',label:'Checklists & tasks',desc:'The task system',actions:['view','create','edit','assign','approve'],scoped:true},
-  {key:'questions',label:'Questions',desc:'The questions feature',actions:['view','manage'],scoped:false},
-  {key:'tickets',label:'Tickets',desc:'Issue tickets',actions:['view','create','manage'],scoped:true},
-  {key:'documentsOrg',label:'Documents (organization)',desc:'Shared dept/location files',actions:['view','create','delete','download'],scoped:true},
-  {key:'documentsPersonal',label:'Personal documents',desc:'Files on a person\'s profile',actions:['view','create','delete','download'],scoped:true},
-  {key:'reports',label:'Reports & Analytics',desc:'HR reports and dashboards',actions:['view','download'],scoped:false},
-  {key:'announcements',label:'Announcements',desc:'Company-wide messages',actions:['view','create'],scoped:false},
-  {key:'locations',label:'Locations',desc:'Offices and GPS boundary',actions:['view','create','edit','manage'],scoped:false},
-  {key:'departments',label:'Departments',desc:'Department list',actions:['view','create','edit'],scoped:false},
-  {key:'audit',label:'Audit / Activity log',desc:'History of actions',actions:['view'],scoped:false},
-  {key:'settings',label:'Settings',desc:'App settings',actions:['view','edit'],scoped:false},
-  {key:'accessControl',label:'Access Control',desc:'The role-profile system itself',actions:['view','manage'],scoped:false},
+  {key:'dashboard',label:'Dashboard',desc:'The landing overview',actions:['view'],scoped:false,group:'System'},
+  {key:'attendance',label:'Attendance',desc:'Clock-in/out records & calendar',actions:['view','edit','download'],scoped:true,group:'Leave & Attendance'},
+  {key:'leaveRequests',label:'Leave — requests',desc:'Applying for and acting on leave',actions:['view','create','approve','download'],scoped:true,group:'Leave & Attendance'},
+  {key:'leaveBalances',label:'Leave — balances',desc:"People's leave day balances",actions:['view','edit','grant'],scoped:true,group:'Leave & Attendance'},
+  {key:'hrSettings',label:'HR settings',desc:'Leave policy, types, holidays, approval flows',actions:['view','edit'],scoped:false,group:'Leave & Attendance'},
+  {key:'employees',label:'Employees / Users',desc:'The people directory',actions:['view','create','edit','delete','deactivate','assignManager','assignRole','assign','manage'],scoped:true,group:'People & Org'},
+  {key:'hierarchy',label:'Hierarchy / Org chart',desc:'The reporting tree',actions:['view'],scoped:true,group:'People & Org'},
+  {key:'onboarding',label:'Onboarding',desc:'New-hire onboarding templates & progress',actions:['view','manage','approve'],scoped:true,group:'People & Org'},
+  {key:'checklists',label:'Checklists & tasks',desc:'The task system',actions:['view','create','edit','assign','approve'],scoped:true,group:'Tasks & Tickets'},
+  {key:'questions',label:'Questions',desc:'The questions feature',actions:['view','manage'],scoped:false,group:'Tasks & Tickets'},
+  {key:'tickets',label:'Tickets',desc:'Issue tickets',actions:['view','create','manage'],scoped:true,group:'Tasks & Tickets'},
+  {key:'documentsOrg',label:'Documents (organization)',desc:'Shared dept/location files',actions:['view','create','delete','download','approve'],scoped:true,group:'Content'},
+  {key:'documentsPersonal',label:'Personal documents',desc:'Files on a person\'s profile',actions:['view','create','delete','download'],scoped:true,group:'Content'},
+  {key:'reports',label:'Reports & Analytics',desc:'HR reports and dashboards',actions:['view','download'],scoped:false,group:'People & Org'},
+  {key:'announcements',label:'Announcements',desc:'Company-wide messages',actions:['view','create'],scoped:false,group:'Content'},
+  {key:'locations',label:'Locations',desc:'Offices and GPS boundary',actions:['view','create','edit','manage'],scoped:false,group:'System'},
+  {key:'departments',label:'Departments',desc:'Department list',actions:['view','create','edit'],scoped:false,group:'System'},
+  {key:'audit',label:'Audit / Activity log',desc:'History of actions',actions:['view'],scoped:false,group:'System'},
+  {key:'settings',label:'Settings',desc:'App settings',actions:['view','edit'],scoped:false,group:'System'},
+  {key:'accessControl',label:'Access Control',desc:'The role-profile system itself',actions:['view','manage'],scoped:false,group:'System'},
 ];
 // Plain-language labels used by the Access Control editor + live summary.
 const PERM_ACTION_LABEL={view:'View',create:'Create',edit:'Edit',delete:'Delete',deactivate:'Deactivate',approve:'Approve',download:'Download / Export',manage:'Manage',manageSettings:'Manage settings',assign:'Assign',assignRole:'Assign role profile',assignManager:'Assign manager',grant:'Grant / Remove',submit:'Submit',upload:'Upload',manageGeofence:'Manage geofence'};
@@ -888,8 +960,9 @@ function _seedRoleProfiles(){
       attendance:A('team','view','download'),
       leaveRequests:A('team','view','create','approve','download'),
       leaveBalances:A('team','view'),
-      employees:A('team','view'),
+      employees:A('team','view'), // C2: managers view their team only — deactivate/assignManager/assignRole withheld (SubAdmin/Admin task today; toggle in Access Control to grant)
       hierarchy:A('team','view'),
+      onboarding:A('team','view'), // managers see their direct reports' onboarding progress (grant approve/manage in Access Control)
       checklists:A('team','view','create','edit','assign','approve'),
       tickets:A('team','view','create','manage'),
       documentsPersonal:A('self','view','create','download'),
@@ -923,6 +996,8 @@ function _hrFloor(area,action){
   if(area==='hrSettings')return action==='view'||action==='edit';
   if(area==='leaveRequests')return action==='view'||action==='approve';
   if(area==='attendance')return action==='view'||action==='edit';
+  if(area==='documentsOrg')return action==='approve'; // HR can approve org-doc submissions by default
+  if(area==='onboarding')return action==='view'||action==='manage'||action==='approve'; // HR owns onboarding by default
   return false;
 }
 // scopeOf(area) → 'none'|'self'|'team'|'department'|'location'|'everyone'
@@ -958,12 +1033,20 @@ function _baseCan(area,action){
     case 'leaveRequests':return action==='approve'?(sub||mgr||hr):(action==='download'?(sub||hr):true);
     case 'leaveBalances':return action==='view'?(sub||mgr||hr):((action==='grant'||action==='edit')?hr:false);
     case 'hrSettings':return hr;
-    case 'employees':return action==='view'?(sub||mgr):sub; /* create/edit/delete today = Super Admin only → handled by isAdmin() in can() */
+    case 'employees':
+      // C2: deactivate/assignManager/assignRole are sensitive sub-actions of editing a user.
+      //   They ran today under employees.edit (SubAdmin via this shim, Super Admin via isAdmin()).
+      //   Keep that exact floor so no existing user loses access; assignRole stays admin-only (it
+      //   grants permission bundles) to avoid privilege escalation by a SubAdmin.
+      if(action==='deactivate'||action==='assignManager')return sub;
+      if(action==='assignRole')return false; /* Super Admin only (isAdmin() short-circuits) */
+      return action==='view'?(sub||mgr):sub; /* create/edit/delete today = Super Admin only → handled by isAdmin() in can() */
     case 'hierarchy':return true;
+    case 'onboarding':return action==='view'?(sub||mgr||hr):(sub||hr); // HR/SubAdmin manage+approve; managers view their hires
     case 'checklists':return action==='view'?true:(sub||mgr);
     case 'questions':return q||sub;
     case 'tickets':return action==='manage'?(sub||mgr):true; /* create/view=everyone; manage/resolve historically requires SubAdmin or Manager (per-ticket subtree/assignee still enforced in the ticket UI) */
-    case 'documentsOrg':return doc;
+    case 'documentsOrg':return action==='approve'?hr:doc; /* approve = HR/Admin only by default; grant to others in Access Control */
     case 'documentsPersonal':return true; /* own */
     case 'reports':return (action==='download')?(hr||_canReportLegacy()):(hr||mgr||_canReportLegacy());
     case 'announcements':return action==='view'?true:hr;
@@ -1052,10 +1135,9 @@ function _notifCount(){
   // Cache for 3 seconds to avoid recalculating on every rr()
   if(_notifCache.uid===uid&&now-_notifCache.ts<3000)return _notifCache.count;
   let count=0;
-  if(isAdmin()||isMgr()){
-    const myTree=subTree(uid).map(u=>u.id);
-    count+=DB.approvals.filter(a=>a.status==='Pending'&&(isAdmin()||myTree.includes(a.requesterId))).length;
-  }
+  // B3: approvals component now spans ALL types (leave + submissions + edits) via the unified
+  // inbox count, so the nav/notif badge reflects every pending decision, not just submissions.
+  count+=_approvalPendingCount();
   count+=DB.notifications.filter(n=>n.userId===uid&&!n.read).length;
   // Count unviewed tickets assigned to me
   const unviewedTickets=(DB.tickets||[]).filter(t=>t.assignedTo===uid&&!(t.viewedBy||[]).includes(uid)).length;
@@ -1085,7 +1167,7 @@ function _recoverEditingSubmissions(){
   });
 }
 /* ===== NAVIGATION ===== */
-const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
+const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['onboarding','users','Onboarding'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
 const NAV_USR=[['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['notifications','bell','Notifications']];
 const NAV_MGR=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['teamview','users','Team'],['users','user','My Users'],['checklists','list','Create Checklist'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics']];
 const MOB_ADM=['dashboard','mychecklists','tickets','notifications','more'];
@@ -1151,6 +1233,12 @@ const navFor=()=>{
     const after=base.findIndex(n=>n[0]==='users')>-1?base.findIndex(n=>n[0]==='users'):base.findIndex(n=>n[0]==='teamview');
     base.splice(after>-1?after+1:base.length,0,['hierarchy','tree','Hierarchy']);
   }
+  // ONBOARDING tab for anyone who can view it (HR/SubAdmin/manager). The hire sees their own card on
+  // the dashboard, so the (HR-flavoured) tab is gated on can('onboarding','view') == nav==router guard.
+  if(can('onboarding','view')&&!base.find(n=>n[0]==='onboarding')){
+    const after=base.findIndex(n=>n[0]==='users')>-1?base.findIndex(n=>n[0]==='users'):base.findIndex(n=>n[0]==='hierarchy');
+    base.splice(after>-1?after+1:base.length,0,['onboarding','users','Onboarding']);
+  }
   return base;
 };
 App.go=(r)=>{S.route=r;S.search='';S.expandedCl=null;S.afOpen=null;
@@ -1173,7 +1261,15 @@ App._lazyLoad=_lazyLoad;App._lazyLoadDate=_lazyLoadDate;
 let _lastUserAction=0; // timestamp of last submit/approve/etc — prevents loadFromSB overwriting fresh state
 function _touchAction(){_lastUserAction=Date.now();}
 function render(){if(!S.uid){$('#app').innerHTML=loginView();return;}$('#app').innerHTML=shell(pageContent());}
-function rr(){_invalidateNotifCache();const c=$('#content');if(c)c.innerHTML=pageContent();}
+function rr(){_invalidateNotifCache();const c=$('#content');if(!c)return;
+  // A2: rr() is an in-place refresh (filter chips, sub-tabs, toggles, inline edits) — not a route
+  //     change. The whole page scrolls via document.scrollingElement (#content has no overflow of
+  //     its own; the topbar is sticky). Replacing innerHTML collapses scroll height to 0 and the
+  //     browser resets scrollTop, so snapshot/restore it. Route changes keep render()+scrollTo(0,0).
+  const sc=document.scrollingElement||document.documentElement;
+  const y=sc?sc.scrollTop:0;
+  c.innerHTML=pageContent();
+  if(sc)sc.scrollTop=y;}
 App.rr=rr;
 // UI-1: live-search helper — rr() rebuilds #content.innerHTML and destroys the typing <input>,
 // dropping focus/caret (closes the mobile keyboard each keystroke). Re-render, then restore
@@ -1190,7 +1286,7 @@ function shell(content){
     const act=S.route===r;
     let badge='';
     if(r==='notifications'&&notifBadge)badge=`<span style="font-size:10px;font-weight:800;background:#EF4444;color:#fff;border-radius:99px;padding:1px 6px;min-width:18px;text-align:center">${notifBadge}</span>`;
-    if(r==='approvals'){const ab=DB.approvals.filter(a=>a.status==='Pending').length;if(ab)badge=`<span style="font-size:10px;font-weight:800;background:#F97316;color:#fff;border-radius:99px;padding:1px 6px;min-width:18px;text-align:center">${ab}</span>`;}
+    if(r==='approvals'){const ab=_approvalPendingCount();if(ab)badge=`<span style="font-size:10px;font-weight:800;background:#F97316;color:#fff;border-radius:99px;padding:1px 6px;min-width:18px;text-align:center">${ab}</span>`;}
     if(r==='tickets'){const tkB=(DB.tickets||[]).filter(t=>t.assignedTo===S.uid&&!(t.viewedBy||[]).includes(S.uid)).length;if(tkB)badge=`<span style="font-size:10px;font-weight:800;background:#E11D48;color:#fff;border-radius:99px;padding:1px 6px;min-width:18px;text-align:center">${tkB}</span>`;}
     return`<button onclick="App.go('${r}')"
     style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;border:none;cursor:pointer;transition:all .12s;text-align:left;font-size:13px;font-weight:600;${act?'background:rgba(255,255,255,.12);color:#fff':'background:transparent;color:rgba(255,255,255,.55)'}"
@@ -1253,7 +1349,7 @@ function shell(content){
 App.moreMenu=()=>{
   const nav=navFor();
   const nb=_notifCount();
-  const ab=DB.approvals.filter(a=>a.status==='Pending').length;
+  const ab=_approvalPendingCount();
   openModal(`<div class="p-5"><div class="flex justify-between mb-4"><h2 class="fd text-lg font-bold">Menu</h2><button onclick="App.closeModal()" class="text-ink-400">${ic('x')}</button></div><div class="grid grid-cols-3 gap-2">${nav.map(([r,i,l])=>{let badge='';if(r==='notifications'&&nb)badge=`<span style="position:absolute;top:4px;right:4px;font-size:9px;font-weight:800;background:#EF4444;color:#fff;border-radius:99px;padding:1px 5px;min-width:15px;text-align:center">${nb}</span>`;if(r==='approvals'&&ab)badge=`<span style="position:absolute;top:4px;right:4px;font-size:9px;font-weight:800;background:#F97316;color:#fff;border-radius:99px;padding:1px 5px;min-width:15px;text-align:center">${ab}</span>`;const tkBM=(DB.tickets||[]).filter(t=>t.assignedTo===S.uid&&!(t.viewedBy||[]).includes(S.uid)).length;if(r==='tickets'&&tkBM)badge=`<span style="position:absolute;top:4px;right:4px;font-size:9px;font-weight:800;background:#E11D48;color:#fff;border-radius:99px;padding:1px 5px;min-width:15px;text-align:center">${tkBM}</span>`;return`<button onclick="App.closeModal();App.go('${r}')" style="position:relative" class="flex flex-col items-center gap-1.5 p-3 rounded-2xl border border-ink-100 hover:bg-ink-50 ${S.route===r?'bg-brand-50 border-brand-200 text-brand-700':'text-ink-600'}">${ic(i,'w-5 h-5')}${badge}<span class="text-[11px] font-semibold text-center">${l}</span></button>`;}).join('')}</div><button onclick="App.logout()" class="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-ink-50 text-ink-600 font-semibold text-sm">${ic('logout','w-4 h-4')}Sign out</button></div>`);
 };
 App.saveProfile=async()=>{
@@ -1293,10 +1389,11 @@ function pageContent(){
   if(r==='departments')return deptsPage();
   if(r==='locations')return locsPage();
   if(r==='checklists')return clsPage();
-  if(r==='approvals'){if(isAdmin()||isSubAdmin()||isMgr())return approvalsPage();S.route='notifications';return notificationsPage();}
+  if(r==='approvals'){const _pg=USE_UNIFIED_APPROVALS?unifiedApprovalsPage:approvalsPage;if(isAdmin()||isSubAdmin()||isMgr()||can('leaveRequests','approve'))return _pg();S.route='notifications';return notificationsPage();}
   if(r==='notifications')return notificationsPage();
   if(r==='tickets')return ticketsPage();
   if(r==='hierarchy')return hierarchyPage();
+  if(r==='onboarding'){if(can('onboarding','view'))return onboardingPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='announcements'){if(can('announcements','view'))return announcementsPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='analytics')return analyticsPage();
   if(r==='audit')return auditPage();
@@ -1515,6 +1612,8 @@ function mgrDash(){
 
 /* ===== USERS ===== */
 function _disableBtn(u){
+  if(!can('employees','deactivate')||!scopeFilter('employees')(u.id))return''; // C2: gate enable/disable button to the dedicated permission
+  if(u.role==='Admin'&&!isAdmin())return''; // never offer to disable a Super Admin to a non-admin
   const isActive=u.status==='Active';
   const bg=isActive?'transparent':'#FEF3C7';
   const col=isActive?'#9CA3AF':'#D97706';
@@ -1526,7 +1625,7 @@ function usersPage(){
   // Directory scoped by the resolver (employees area). Keep Super Admin out of the people list
   // for non-admins exactly as before — scopeFilter('employees') handles that. For unassigned
   // users _baseScope yields today's behavior (Admin/SubAdmin → everyone, manager → team).
-  const _canEdit=can('employees','edit'),_canDel=can('employees','delete');
+  const _canEdit=can('employees','edit'),_canDel=can('employees','delete'),_canOb=can('onboarding','manage');
   let list=scopedUsers('employees');const q=S.search.toLowerCase();
   if(q)list=list.filter(u=>fullName(u).toLowerCase().includes(q)||u.email.toLowerCase().includes(q));
   if(S.filters.dep)list=list.filter(u=>u.department===S.filters.dep);
@@ -1539,7 +1638,7 @@ function usersPage(){
   </div>
   <div class="hidden md:block bg-white rounded-2xl border border-ink-100 shadow-soft overflow-hidden">
     <table class="w-full text-sm"><thead><tr class="text-[10px] text-ink-400 uppercase tracking-wide border-b border-ink-100 text-left"><th class="px-5 py-3 font-semibold">Name</th><th class="px-5 py-3 font-semibold">Department</th><th class="px-5 py-3 font-semibold">Role</th><th class="px-5 py-3 font-semibold">Reports to</th><th class="px-5 py-3 font-semibold">Status</th><th class="px-5 py-3"></th></tr></thead>
-    <tbody class="divide-y divide-ink-50">${list.map(u=>{const mgr=u.managerId?uById(u.managerId):null;const isMgrUser=subTree(u.id).length>0;return`<tr class="hover:bg-ink-50/50"><td class="px-5 py-3"><div class="flex items-center gap-3">${avatar(u,'w-9 h-9','text-xs')}<div><div class="font-semibold">${esc(fullName(u))}</div><div class="text-xs text-ink-400">${esc(u.email)}</div></div></div></td><td class="px-5 py-3">${esc(u.department)}<div class="text-xs text-ink-400">${esc(u.position)}</div></td><td class="px-5 py-3">${u.role==='Admin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#15171C;color:#fff">Super Admin</span>':u.role==='SubAdmin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#EEF2FF;color:#4338CA">Admin</span>':isMgrUser?'<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700">Manager</span>':'<span class="text-xs text-ink-400">User</span>'}</td><td class="px-5 py-3 text-sm">${mgr?esc(fullName(mgr)):'<span class="text-ink-300">—</span>'}</td><td class="px-5 py-3">${chip(u.status)}</td><td class="px-5 py-3"><div class="flex gap-1 justify-end">${(_canEdit||_canDel)?`${_canEdit?`<button onclick="App.editUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'">${ic('edit','w-4 h-4')}</button><button onclick="App.resetPw('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'" title="Reset password">${ic('key','w-4 h-4')}</button>${_disableBtn(u)}`:''}${(_canDel&&u.role!=='Admin')?`<button onclick="App.delUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#FFF1F2';this.style.color='#BE123C'" onmouseout="this.style.background='transparent';this.style.color='#9CA3AF'">${ic('trash','w-4 h-4')}</button>`:''}`:'<span class="text-ink-200">—</span>'}</div></td></tr>`;}).join('')}</tbody></table>
+    <tbody class="divide-y divide-ink-50">${list.map(u=>{const mgr=u.managerId?uById(u.managerId):null;const isMgrUser=subTree(u.id).length>0;return`<tr class="hover:bg-ink-50/50"><td class="px-5 py-3"><div class="flex items-center gap-3">${avatar(u,'w-9 h-9','text-xs')}<div><div class="font-semibold">${esc(fullName(u))}</div><div class="text-xs text-ink-400">${esc(u.email)}</div></div></div></td><td class="px-5 py-3">${esc(u.department)}<div class="text-xs text-ink-400">${esc(u.position)}</div></td><td class="px-5 py-3">${u.role==='Admin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#15171C;color:#fff">Super Admin</span>':u.role==='SubAdmin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#EEF2FF;color:#4338CA">Admin</span>':isMgrUser?'<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700">Manager</span>':'<span class="text-xs text-ink-400">User</span>'}</td><td class="px-5 py-3 text-sm">${mgr?esc(fullName(mgr)):'<span class="text-ink-300">—</span>'}</td><td class="px-5 py-3">${chip(u.status)}</td><td class="px-5 py-3"><div class="flex gap-1 justify-end">${(_canEdit||_canDel)?`${_canEdit?`<button onclick="App.editUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'">${ic('edit','w-4 h-4')}</button><button onclick="App.resetPw('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'" title="Reset password">${ic('key','w-4 h-4')}</button>${_disableBtn(u)}`:''}${_canOb?`<button onclick="App._obStart('${u.id}')" title="Start onboarding" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'">🚀</button>`:''}${(_canDel&&u.role!=='Admin')?`<button onclick="App.delUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#FFF1F2';this.style.color='#BE123C'" onmouseout="this.style.background='transparent';this.style.color='#9CA3AF'">${ic('trash','w-4 h-4')}</button>`:''}`:'<span class="text-ink-200">—</span>'}</div></td></tr>`;}).join('')}</tbody></table>
     ${list.length?'':empty('users','No users','')}
   </div>
   <div class="md:hidden space-y-2">${list.map(u=>{const mgr=u.managerId?uById(u.managerId):null;return`<div class="bg-white rounded-2xl border border-ink-100 shadow-soft p-4" ${_canEdit?`onclick="App.editUser('${u.id}')" style="cursor:pointer"`:''}>
@@ -1561,8 +1660,10 @@ function _hrmUserSection(u){
     <div><label class="block text-xs font-semibold text-ink-500 mb-1.5">Weekly off-days</label><div style="display:flex;gap:6px;flex-wrap:wrap">${DAYS3.map(d=>`<button type="button" class="dchip${off.has(d)?' on':''}" onclick="this.classList.toggle('on')" data-day="${d}">${d}</button>`).join('')}</div></div>
     ${mkTog('u-ishr',h.isHR??false,'HR (configures HRM, 2nd-stage approver)')}
     <div><p class="text-[10px] font-bold text-ink-400 uppercase tracking-wide mb-1">Access</p>
-      ${selF('Role profile','u-rprof',rpOpts,h.roleProfileId||'')}
-      <p style="font-size:11px;color:#9CA3AF;margin-top:4px">Decides what this person can do across the app. Manage profiles in <strong>Access Control</strong>. "Base role default" keeps today's behavior for their base role.</p></div>
+      ${can('employees','assignRole')
+        ?`${selF('Role profile','u-rprof',rpOpts,h.roleProfileId||'')}<p style="font-size:11px;color:#9CA3AF;margin-top:4px">Decides what this person can do across the app. Manage profiles in <strong>Access Control</strong>. "Base role default" keeps today's behavior for their base role.</p>`
+        // C2: no assignRole permission → show current profile read-only + hidden input so saveUser preserves it verbatim.
+        :`<div class="w-full bg-ink-50 border border-ink-200 rounded-xl px-3 py-2.5 text-sm text-ink-500">${esc((rpOpts.find(o=>o[0]===(h.roleProfileId||''))||['','— Base role default —'])[1])}</div><input type="hidden" id="u-rprof" value="${esc(h.roleProfileId||'')}"><p style="font-size:11px;color:#9CA3AF;margin-top:4px">Only an administrator can change a role profile.</p>`}</div>
     ${u&&can('leaveBalances','grant')&&(u.id!==S.uid)?`<div style="border-top:1px solid #E5E7EB;padding-top:10px"><p class="text-[10px] font-bold text-ink-400 uppercase tracking-wide mb-1">Comp-off (HR) · ${_compOffRemaining(u.id)} day(s) remaining</p><div class="grid grid-cols-2 gap-2"><input id="u-co-days" type="number" step="0.5" placeholder="Days (+ grant / − remove)" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"/><input id="u-co-exp" type="date" title="Expiry (for grants)" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"/></div><input id="u-co-reason" placeholder="Reason" class="w-full bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf mt-2"/><button type="button" onclick="App.addCompOff('${u.id}')" style="margin-top:8px;width:100%;padding:9px;border-radius:10px;border:1px solid #E5E7EB;background:#fff;font-weight:600;font-size:13px;cursor:pointer">Apply comp-off change</button>${(u.hrm?.compOff||[]).length?`<div style="margin-top:8px;max-height:120px;overflow:auto">${(u.hrm.compOff||[]).slice().reverse().map(e=>`<div style="font-size:11px;color:#6B7280;padding:3px 0;border-bottom:1px solid #F3F4F6"><strong style="color:${(Number(e.days)||0)<0?'#B91C1C':'#0E7A4F'}">${(Number(e.days)||0)>0?'+':''}${e.days}</strong> · ${esc(e.reason||'')}${e.expiry?(' · exp '+fmtD(e.expiry)):''}</div>`).join('')}</div>`:''}</div>`:''}
   </div>`;
 }
@@ -1717,7 +1818,10 @@ App.editUser=(id=null)=>{
     <div class="grid grid-cols-2 gap-3">${fld('First name','u-fn',v('firstName'))}${fld('Last name','u-ln',v('lastName'))}</div>
     <div class="grid grid-cols-2 gap-3">${fld('Email','u-email',v('email'),'email')}${fld('Phone','u-phone',v('phone'))}</div>
     <div class="grid grid-cols-2 gap-3">${fld('Position','u-pos',v('position'))}${selF('Department','u-dep',DB.departments.map(d=>d.name),u?.department||'')}</div>
-    <div class="grid grid-cols-3 gap-3">${roleSelHtml}${selF('Status','u-status',['Active','Inactive'],u?.status||'Active')}<div><label for="u-mgr" class="block text-xs font-semibold text-ink-500 mb-1">Reports to</label><select id="u-mgr" class="w-full bg-white border border-ink-200 rounded-xl px-3 py-2.5 text-sm rf"><option value="">— None —</option>${mgrOpts.map(m=>`<option value="${m.id}"${u?.managerId===m.id?' selected':''}>${esc(fullName(m))}</option>`).join('')}</select></div></div>
+    <div class="grid grid-cols-3 gap-3">${roleSelHtml}${selF('Status','u-status',['Active','Inactive'],u?.status||'Active')}<div><label for="u-mgr" class="block text-xs font-semibold text-ink-500 mb-1">Reports to</label>${can('employees','assignManager')
+      ?`<select id="u-mgr" class="w-full bg-white border border-ink-200 rounded-xl px-3 py-2.5 text-sm rf"><option value="">— None —</option>${mgrOpts.map(m=>`<option value="${m.id}"${u?.managerId===m.id?' selected':''}>${esc(fullName(m))}</option>`).join('')}</select>`
+      // C2: no assignManager permission → current manager read-only + hidden input so saveUser preserves it.
+      :`<div class="w-full bg-ink-50 border border-ink-200 rounded-xl px-3 py-2.5 text-sm text-ink-500">${esc(u?.managerId?fullName(uById(u.managerId)):'— None —')}</div><input type="hidden" id="u-mgr" value="${esc(u?.managerId||'')}">`}</div></div>
     ${!u?fld('Password','u-pw','','password','Set a password'):''}
     <div class="bg-ink-50 rounded-2xl p-4"><p class="text-[10px] font-bold text-ink-400 uppercase tracking-wide mb-2">Submission rules</p>${mkTog('u-rp',u?.rules?.past??true,'Allow past-date submissions')}${mkTog('u-rf',u?.rules?.future??true,'Allow future-date submissions')}${mkTog('u-re',u?.rules?.edit??true,'Can edit submitted data')}</div>
     <div class="bg-ink-50 rounded-2xl p-4"><p class="text-[10px] font-bold text-ink-400 uppercase tracking-wide mb-2">Approval required for</p>${mkTog('u-ap',u?.approval?.past??false,'Past entries')}${mkTog('u-af',u?.approval?.future??false,'Future entries')}${mkTog('u-ae',u?.approval?.edited??false,'Edited entries')}</div>
@@ -1737,7 +1841,15 @@ App.saveUser=async(id)=>{
   const g=i=>($('#'+i)?.value||'').trim();
   const fn=g('u-fn'),ln=g('u-ln'),email=g('u-email');
   if(!fn||!ln||!email){toast('Name & email required','err');return;}
-  const mId=$('#u-mgr')?.value||null;
+  const _existingU=id?uById(id):null;
+  // C2: assignManager is a dedicated gate. If the user lacks it, preserve the existing manager
+  //   (or force none on create) so a deep-link/console call can't re-parent someone out of scope.
+  let mId=$('#u-mgr')?.value||null;
+  if(!can('employees','assignManager')){
+    const cur=_existingU?(_existingU.managerId||null):null;
+    if((mId||null)!==(cur||null)){toast('Not permitted to change reporting manager','err');return;}
+    mId=cur;
+  }
   if(id&&mId&&(mId===id||isDesc(mId,id))){toast('Circular hierarchy!','err');return;}
 
   // ── Read doc permissions FIRST (before any closeModal) ──
@@ -1759,6 +1871,14 @@ App.saveUser=async(id)=>{
   const approval_settings={past:togV('u-ap'),future:togV('u-af'),edited:togV('u-ae')};
   // HRM fields — stored locally on u.hrm ONLY, never added to the Supabase upsert payload (pd)
   const hrm=_readHrmFromForm(id?uById(id)?.hrm:null);
+  // C2: assignRole is a dedicated gate (it grants permission BUNDLES → privilege escalation risk).
+  //   If the user lacks it, preserve the existing role profile (or none on create) — never let the
+  //   form value change who the target can act as.
+  if(!can('employees','assignRole')){
+    const curRP=_existingU?.hrm?.roleProfileId??null;
+    if((hrm.roleProfileId||null)!==(curRP||null)){toast('Not permitted to assign a role profile','err');return;}
+    hrm.roleProfileId=curRP;
+  }
 
   // SEC-1: never let a non-Super-Admin assign or change an elevated role.
   // Non-admins: force role 'User' on create, and preserve the existing role on edit.
@@ -1807,8 +1927,8 @@ App.saveUser=async(id)=>{
     toast('Saved ✓');closeModal();saveDB();render();
     // Sync all fields including doc_access to Supabase in background
     sb.from('profiles').update(pd).eq('id',id).then(({error})=>{
-      if(error)console.warn('saveUser sync:',error.message);
-    });
+      if(error)_syncErr('user changes')(error);
+    }).catch(_syncErr('user changes'));
   } else {
     const pw=g('u-pw');if(!pw){toast('Password required','err');return;}
     const saveBtn=document.querySelector('[onclick*="saveUser"]');
@@ -1835,6 +1955,10 @@ App.saveUser=async(id)=>{
     log(fullName(me()),'Created user',fn+' '+ln);
     toast('✓ '+fn+' '+ln+' created');
     closeModal();saveDB();render();
+    // Non-blocking offer: start onboarding for the new hire (only if HR/manager can manage + a template exists).
+    if(newId&&can('onboarding','manage')&&(DB.onboardingTemplates||[]).some(t=>t.active!==false)){
+      setTimeout(()=>{if(confirm('Start onboarding for '+fn+' '+ln+'?'))App._obStart(newId);},250);
+    }
   }
 };
 App.resetPw=(id)=>{
@@ -1868,9 +1992,9 @@ App._doResetPw=async(uid)=>{
 };
 App.togUser=(id)=>{
   const u=uById(id);if(!u)return;
-  // SEC-2: require employees.edit + target in scope; never disable a Super Admin unless Super Admin.
-  if(!can('employees','edit')||!scopeFilter('employees')(id)){toast('Not allowed','err');return;}
-  if(u.role==='Admin'&&!isAdmin()){toast('Not allowed','err');return;}
+  // SEC-2/C2: require employees.deactivate (dedicated gate) + target in scope; never disable a Super Admin unless Super Admin.
+  if(!can('employees','deactivate')||!scopeFilter('employees')(id)){toast('Not permitted','err');return;}
+  if(u.role==='Admin'&&!isAdmin()){toast('Not permitted','err');return;}
   const enabling=u.status!=='Active';
   u.status=enabling?'Active':'Inactive';
   // M8: deactivating an employee must not strand their Pending leave / leak the reserved `pending` balance.
@@ -1885,7 +2009,7 @@ App.togUser=(id)=>{
   }
   saveDB();render();
   toast(fullName(u)+' '+(enabling?'enabled ✓':'disabled'),enabling?'ok':'warn');
-  sb.from('profiles').update({status:u.status}).eq('id',id).then(()=>{}).catch(e=>console.warn('togUser:',e));
+  sb.from('profiles').update({status:u.status}).eq('id',id).then(({error})=>{if(error)_syncErr(enabling?'enable':'disable')(error);}).catch(_syncErr(enabling?'enable':'disable'));
 };
 App.delUser=async(id)=>{
   const u=uById(id);if(!u)return;
@@ -1930,6 +2054,14 @@ App.delUser=async(id)=>{
 };
 
 /* ===== DEPARTMENTS ===== */
+// Small pill showing a flagged doc's approval state (pending/approved/rejected). Empty for legacy docs.
+function _docApprBadge(d){
+  if(!d||!d.approvalStatus)return '';
+  const s=d.approvalStatus;
+  const sty=s==='approved'?'background:#ECFDF5;color:#0E9F6E':s==='rejected'?'background:#FEE2E2;color:#DC2626':'background:#FEF3C7;color:#D97706';
+  const txt=s==='approved'?'Approved':s==='rejected'?'Rejected':'Pending approval';
+  return '<span style="font-size:9px;font-weight:800;'+sty+';padding:1px 7px;border-radius:99px;margin-left:6px;vertical-align:middle">'+txt+'</span>';
+}
 function _scopeDocsTab(type, scopeKey){
   const u=me();const isAdm=isAdmin();
   const da=(u?.docAccess)||{departments:{},locations:{}};
@@ -1991,7 +2123,7 @@ function _scopeDocsTab(type, scopeKey){
         const icon=ext==='pdf'?'📄':ext.match(/xlsx?|csv/)?'📊':ext.match(/docx?/)?'📝':ext.match(/pptx?/)?'📊':ext.match(/jpe?g|png|gif|webp/)?'🖼':'📎';
         return'<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:'+(i<scopeDocs.length-1?'1px solid #F3F4F6':'none')+'">'
           +'<span style="font-size:22px;flex-shrink:0">'+icon+'</span>'
-          +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+esc(d.name)+'</div>'
+          +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+esc(d.name)+_docApprBadge(d)+'</div>'
           +'<div style="font-size:11px;color:#9CA3AF;margin-top:1px">'+(d.uploadedAt?fmtS(d.uploadedAt.slice(0,10)):'')+' · '+(d.uploaderName||'')+(d.fileSize?' · '+_fmtSize(d.fileSize):'')+'</div></div>'
           +'<div style="display:flex;gap:6px;flex-shrink:0">'
           +(p.download||isAdm?'<button onclick="App._downloadDoc(this.dataset.id)" data-id="'+d.id+'" style="padding:5px 10px;border-radius:7px;background:#ECFDF5;color:#0E9F6E;font-size:12px;font-weight:700;border:1px solid #A7F3D0;cursor:pointer">↓ Download</button>':'')
@@ -2323,8 +2455,8 @@ function deptsPage(){
     +'</div></div>';
 }
 App.editDept=(id=null)=>{const d=id?DB.departments.find(x=>x.id===id):null;openModal(`<div class="p-6"><div class="flex justify-between mb-4"><h2 class="fd text-xl font-bold">${d?'Edit':'New'} department</h2><button onclick="App.closeModal()" class="text-ink-400">${ic('x')}</button></div>${fld('Name','d-n',d?.name||'')}<div class="flex gap-2 mt-4"><button onclick="App.closeModal()" style="flex:1;padding:12px;border-radius:12px;border:1.5px solid #ECEDF0;background:#fff;font-weight:600;font-size:14px;cursor:pointer">Cancel</button><button onclick="App.saveDept('${id||''}')" style="flex:1;padding:12px;border-radius:12px;background:#15171C;color:#fff;font-weight:600;font-size:14px;border:none;cursor:pointer">${d?'Save':'Create'}</button></div></div>`,'max-w-sm');};
-App.saveDept=(id)=>{const n=$('#d-n')?.value.trim();if(!n){toast('Name required','err');return;}const obj=id?DB.departments.find(x=>x.id===id):{id:uid('d'),name:n};if(id)obj.name=n;else DB.departments.push(obj);log(fullName(me()),id?'Edited dept':'Created dept',n);toast(id?'Updated ✓':'Created ✓');saveDB();closeModal();render();sb.from('departments').upsert({id:obj.id,name:obj.name},{onConflict:'id'}).then(({error})=>{if(error)console.error('saveDept:',error.message);}).catch(()=>{});};
-App.delDept=(id)=>{const d=DB.departments.find(x=>x.id===id);if(!d)return;if(!confirm('Delete '+d.name+'? Users and checklists in this department will not be deleted but will have no department.'))return;if(!DB.departments_deleted)DB.departments_deleted=[];if(!DB.departments_deleted.includes(id))DB.departments_deleted.push(id);DB.departments=DB.departments.filter(x=>x.id!==id);sb.from('departments').delete().eq('id',id).then(({error})=>{if(error)console.error('delDept:',error.message);}).catch(()=>{});// Clear dept from users and checklists (don't delete them)
+App.saveDept=(id)=>{const n=$('#d-n')?.value.trim();if(!n){toast('Name required','err');return;}const obj=id?DB.departments.find(x=>x.id===id):{id:uid('d'),name:n};if(id)obj.name=n;else DB.departments.push(obj);log(fullName(me()),id?'Edited dept':'Created dept',n);toast(id?'Updated ✓':'Created ✓');saveDB();closeModal();render();sb.from('departments').upsert({id:obj.id,name:obj.name},{onConflict:'id'}).then(({error})=>{if(error)_syncErr('department')(error);}).catch(_syncErr('department'));};
+App.delDept=(id)=>{const d=DB.departments.find(x=>x.id===id);if(!d)return;if(!confirm('Delete '+d.name+'? Users and checklists in this department will not be deleted but will have no department.'))return;if(!DB.departments_deleted)DB.departments_deleted=[];if(!DB.departments_deleted.includes(id))DB.departments_deleted.push(id);DB.departments=DB.departments.filter(x=>x.id!==id);sb.from('departments').delete().eq('id',id).then(({error})=>{if(error)_syncErr('department delete')(error);}).catch(_syncErr('department delete'));// Clear dept from users and checklists (don't delete them)
 DB.users.forEach(u=>{if(u.department===d.name)u.department='';});DB.checklists.forEach(c=>{if(c.department===d.name)c.department='';});log(fullName(me()),'Deleted dept',d.name);toast('Deleted','warn');saveDB();render();};
 
 /* ===== LOCATIONS ===== */
@@ -2406,7 +2538,7 @@ App.saveLoc=(id)=>{const n=$('#ln-n')?.value.trim();if(!n){toast('Name required'
     const _lat=$('#ln-lat')?.value,_lng=$('#ln-lng')?.value;
     DB.hrmConfig.locationGeo[obj.id]={enabled:togV('ln-geo'),lat:(_lat!==''&&_lat!=null)?Number(_lat):null,lng:(_lng!==''&&_lng!=null)?Number(_lng):null,radius:Number($('#ln-rad')?.value)||200};
   }
-  log(fullName(me()),id?'Edited location':'Created location',n);toast(id?'Updated ✓':'Created ✓');saveDB();closeModal();render();sb.from('locations').upsert({id:obj.id,...data},{onConflict:'id'}).then(({error})=>{if(error)console.error('saveLoc:',error.message);}).catch(()=>{});};
+  log(fullName(me()),id?'Edited location':'Created location',n);toast(id?'Updated ✓':'Created ✓');saveDB();closeModal();render();sb.from('locations').upsert({id:obj.id,...data},{onConflict:'id'}).then(({error})=>{if(error)_syncErr('location')(error);}).catch(_syncErr('location'));};
 App.delLoc=(id)=>{const l=locById(id);if(!l)return;if(!confirm('Delete "'+l.name+'"? Checklists using this location will keep it as reference.'))return;if(!DB.locations_deleted)DB.locations_deleted=[];if(!DB.locations_deleted.includes(id))DB.locations_deleted.push(id);DB.locations=DB.locations.filter(x=>x.id!==id);if(DB.hrmConfig?.locationGeo)delete DB.hrmConfig.locationGeo[id];
 // DATA-4: clear the dangling locationId from every user pointing at the deleted location
 // (mirrors the dept-clear pattern; u.hrm syncs via the user_hrm table, so cleared ids propagate on next sync).
@@ -2790,6 +2922,7 @@ function myClsPage(){
   const pendN=dayCls.filter(c=>!subForCl(c,S.uid,sel)).length-lateN;
 
   return`<div class="fade">
+  ${_myOnboardingCard()}
   <!-- Title row -->
   <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px">
     <div>
@@ -3693,6 +3826,169 @@ function approvalsPage(){
     +'</div></div>';
 }
 
+// ── B3: UNIFIED APPROVALS INBOX UI ───────────────────────────────────────────────────
+// One screen listing EVERY pending decision (leave + submission + edit, and ready for
+// document/onboarding). Filter chips by type, status sub-tabs, inline Approve/Reject that
+// route back to the NATIVE handlers. Replaces the `approvals` route (old approvalsPage kept
+// callable during transition — see USE_UNIFIED_APPROVALS flag).
+// D4 transition flag: unified inbox is the primary view. Set false to revert the `approvals`
+// route to the legacy approvalsPage() (which is kept intact, still callable). Once the inbox
+// is verified, the legacy approvalsPage + the leave manager/HR approval tabs can be retired.
+const USE_UNIFIED_APPROVALS=true;
+const _APPR_META={
+  leave:      {icon:'📅', label:'Leave',       chip:'Leave'},
+  submission: {icon:'✅', label:'Submissions', chip:'Submissions'},
+  edit:       {icon:'✏️', label:'Edits',       chip:'Edits'},
+  document:   {icon:'📄', label:'Documents',   chip:'Documents'},
+  onboarding: {icon:'🚀', label:'Onboarding',  chip:'Onboarding'},
+};
+const _APPR_ORDER=['leave','submission','edit','document','onboarding'];
+function unifiedApprovalsPage(){
+  const all=_approvalInbox();
+  const tab=S.filters.atab||'Pending';
+  const typeF=S.filters.inboxType||'all';
+  const tabMatch=x=>tab==='Approved'?(x.status==='Approved'):tab==='Rejected'?(x.status==='Rejected'):x.status==='Pending';
+  const cnt={Pending:all.filter(x=>x.status==='Pending').length,Approved:all.filter(x=>x.status==='Approved').length,Rejected:all.filter(x=>x.status==='Rejected').length};
+  // Which types exist AT ALL (any status) → drives the chips shown.
+  const presentTypes=new Set(all.map(x=>x.type));
+  let rows=all.filter(tabMatch);
+  if(typeF!=='all')rows=rows.filter(x=>x.type===typeF);
+  rows.sort((a,b)=>{const ta=a.payload?.createdAt||'';const tb=b.payload?.createdAt||'';return tb.localeCompare(ta);});
+  const TABS=['Pending','Approved','Rejected'];
+  // type filter chips — only show 'All' + types that have items
+  const chips='<div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">'
+    +[['all','All']].concat(_APPR_ORDER.filter(t=>presentTypes.has(t)).map(t=>[t,_APPR_META[t].icon+' '+_APPR_META[t].label]))
+      .map(([k,l])=>{const a=typeF===k;return '<button onclick="App._setInboxType(this.dataset.k)" data-k="'+k+'" style="padding:6px 13px;border-radius:99px;font-size:13px;font-weight:600;border:1px solid '+(a?'#15171C':'#ECEDF0')+';cursor:pointer;background:'+(a?'#15171C':'#fff')+';color:'+(a?'#fff':'#6B7280')+'">'+esc(l)+'</button>';}).join('')
+    +'</div>';
+  const statusBar='<div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">'
+    +TABS.map(t=>{const a=tab===t;const b=cnt[t]?(' <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:10px;background:'+(a?'rgba(255,255,255,0.2)':'#F3F4F6')+';color:'+(a?'#fff':'#6B7280')+'">'+cnt[t]+'</span>'):'';return '<button onclick="App._setTab(this.dataset.t)" data-t="'+t+'" style="padding:8px 16px;border-radius:10px;font-size:14px;font-weight:600;border:none;cursor:pointer;background:'+(a?'#15171C':'transparent')+';color:'+(a?'#fff':'#6B7280')+'">'+t+b+'</button>';}).join('')
+    +'</div>';
+  // Bulk-approve bar: only for Pending + a single type filter (same type) so we can loop the
+  // native handler per row. Hidden on 'all' (mixed types) and on non-pending tabs.
+  const bulkable=tab==='Pending'&&typeF!=='all'&&rows.some(r=>r.status==='Pending');
+  const bulkBar=bulkable?'<div style="margin-bottom:12px"><button onclick="App._bulkApproveInbox(this.dataset.t)" data-t="'+esc(typeF)+'" style="padding:8px 14px;border-radius:10px;background:#0E9F6E;color:#fff;font-weight:700;font-size:13px;border:none;cursor:pointer">Approve all '+esc(_APPR_META[typeF].label.toLowerCase())+' ('+rows.length+')</button></div>':'';
+  const body=rows.length?rows.map(_inboxRow).join(''):empty('approve','No '+tab.toLowerCase()+' approvals','You\'re all caught up.');
+  return '<div class="fade">'+hdr('Approvals','Every pending decision in one place')
+    +chips+statusBar+bulkBar
+    +'<div class="space-y-3">'+body+'</div></div>';
+}
+// One normalised inbox row. Tapping the body opens type-specific detail; Approve/Reject route
+// to native handlers. Only Pending rows the user can act on show buttons.
+function _inboxRow(x){
+  const u=uById(x.requestedBy);const meta=_APPR_META[x.type]||{icon:'•',label:x.type};
+  const when=x.payload?.createdAt?new Date(x.payload.createdAt).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+  const canAct=x.status==='Pending';
+  // native decision routing keyed off _src.coll
+  const approveCall=x._src.coll==='leaveRequests'
+    ? "App._inboxDecide('"+esc(x.id)+"','approve')"
+    : x._src.coll==='documents'
+    ? "App._decideDoc('"+esc(x._src.id)+"','approve')"
+    : x._src.coll==='onboarding_instances'
+    ? "App._inboxDecideOnboard('"+esc(x.id)+"','approve')"
+    : "App._decideApprove('"+esc(x._src.id)+"')";
+  const rejectCall=x._src.coll==='leaveRequests'
+    ? "App._inboxDecide('"+esc(x.id)+"','reject')"
+    : x._src.coll==='documents'
+    ? "App._decideDoc('"+esc(x._src.id)+"','reject')"
+    : x._src.coll==='onboarding_instances'
+    ? "App._inboxDecideOnboard('"+esc(x.id)+"','reject')"
+    : "App._decideReject('"+esc(x._src.id)+"')";
+  return '<div style="background:#fff;border-radius:16px;border:1px solid #ECEDF0;padding:14px">'
+    +'<div onclick="App._inboxOpen(\''+esc(x.id)+'\')" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">'
+    +'<span style="font-size:20px;line-height:1.2;flex-shrink:0">'+meta.icon+'</span>'
+    +'<div style="flex:1;min-width:0">'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:14px;font-weight:700">'+esc(x.subject)+'</span>'
+    +'<span style="font-size:10px;font-weight:700;background:#F3F4F6;color:#6B7280;padding:1px 7px;border-radius:99px">'+esc(meta.label)+'</span>'
+    +(x.status!=='Pending'?chip(x.status):'')+'</div>'
+    +'<div style="font-size:12px;color:#9CA3AF;margin-top:2px">'+esc(u?fullName(u):'Unknown')+(x.dept?' · '+esc(x.dept):'')+(when?' · '+when:'')+'</div>'
+    +'</div></div>'
+    +(canAct
+      ?'<div style="display:flex;gap:8px;margin-top:12px">'
+        +'<button onclick="'+approveCall+'" style="flex:1;padding:9px;border-radius:10px;background:#0E9F6E;color:#fff;font-weight:700;font-size:13px;border:none;cursor:pointer">Approve</button>'
+        +'<button onclick="'+rejectCall+'" style="flex:1;padding:9px;border-radius:10px;background:#fff;color:#B91C1C;font-weight:700;font-size:13px;border:1px solid #FECACA;cursor:pointer">Reject</button>'
+        +'</div>'
+      :'')
+    +'</div>';
+}
+App._setInboxType=(k)=>{S.filters.inboxType=k;rr();};
+// Open type-specific detail reusing existing renderers.
+App._inboxOpen=(iid)=>{
+  const x=_approvalInbox().find(i=>i.id===iid);if(!x)return;
+  if(x.type==='leave'){
+    const r=x.payload;const emp=uById(r.userId);const lt=ltById(r.leaveTypeId);
+    const b=_balanceReadonly(r.userId,r.leaveTypeId,_leaveYearOf(emp,r.start));
+    openModal('<div class="p-5">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h2 class="fd" style="font-size:18px;font-weight:800">'+esc(lt?lt.name:'Leave')+'</h2><button onclick="App.closeModal()" style="background:none;border:none;cursor:pointer;color:#9CA3AF">'+ic('x')+'</button></div>'
+      +'<div style="font-size:13px;color:#6B7280;margin-bottom:8px">'+esc(fullName(emp))+(emp?.department?' · '+esc(emp.department):'')+'</div>'
+      +'<div style="font-size:14px;font-weight:700;color:#374151">'+fmtD(r.start)+' → '+fmtD(r.end)+' · '+r.workingDays+' day'+(r.workingDays===1?'':'s')+(r.halfDay?' (half-day)':'')+'</div>'
+      +'<div style="font-size:12px;color:#6B7280;margin-top:4px">Balance remaining: <strong>'+_balRemaining(b)+'</strong></div>'
+      +(r.reason?'<div style="font-size:12px;color:#6B7280;margin-top:8px;background:#F9FAFB;border-radius:8px;padding:8px">'+esc(r.reason)+'</div>':'')
+      +_leaveChainView(r)
+      +(x.status==='Pending'?'<div style="display:flex;gap:8px;margin-top:14px"><button onclick="App.closeModal();App._inboxDecide(\''+esc(x.id)+'\',\'approve\')" style="flex:1;padding:10px;border-radius:10px;background:#0E9F6E;color:#fff;font-weight:700;border:none;cursor:pointer">Approve</button><button onclick="App.closeModal();App._inboxDecide(\''+esc(x.id)+'\',\'reject\')" style="flex:1;padding:10px;border-radius:10px;background:#fff;color:#B91C1C;font-weight:700;border:1px solid #FECACA;cursor:pointer">Reject</button></div>':'')
+      +'</div>','max-w-md');
+    return;
+  }
+  if(x.type==='document'){
+    const d=x.payload;const up=uById(d.uploadedBy);
+    openModal('<div class="p-5">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h2 class="fd" style="font-size:18px;font-weight:800">📄 '+esc(d.name)+'</h2><button onclick="App.closeModal()" style="background:none;border:none;cursor:pointer;color:#9CA3AF">'+ic('x')+'</button></div>'
+      +'<div style="font-size:13px;color:#6B7280;margin-bottom:8px">Uploaded by '+esc(up?fullName(up):(d.uploaderName||'Unknown'))+(d.uploadedAt?' · '+fmtD(d.uploadedAt.slice(0,10)):'')+'</div>'
+      +(d.fileSize?'<div style="font-size:12px;color:#9CA3AF;margin-bottom:8px">'+_fmtSize(d.fileSize)+'</div>':'')
+      +'<button onclick="App._previewDoc(\''+esc(d.id)+'\')" style="width:100%;padding:10px;border-radius:10px;background:#F6F7F8;color:#374151;font-weight:700;border:1px solid #ECEDF0;cursor:pointer;margin-bottom:6px">View file</button>'
+      +(x.status!=='Pending'?'<div style="font-size:12px;color:#6B7280;margin-top:8px">'+esc(x.status)+(d.decisionNote?' · '+esc(d.decisionNote):'')+'</div>':'')
+      +(x.status==='Pending'?'<div style="display:flex;gap:8px;margin-top:14px"><button onclick="App.closeModal();App._decideDoc(\''+esc(d.id)+'\',\'approve\')" style="flex:1;padding:10px;border-radius:10px;background:#0E9F6E;color:#fff;font-weight:700;border:none;cursor:pointer">Approve</button><button onclick="App.closeModal();App._decideDoc(\''+esc(d.id)+'\',\'reject\')" style="flex:1;padding:10px;border-radius:10px;background:#fff;color:#B91C1C;font-weight:700;border:1px solid #FECACA;cursor:pointer">Reject</button></div>':'')
+      +'</div>','max-w-md');
+    return;
+  }
+  if(x.type==='onboarding'){
+    const s=x.payload;const hire=uById(x.requestedBy);
+    openModal('<div class="p-5">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h2 class="fd" style="font-size:18px;font-weight:800">🚀 '+esc(s.title)+'</h2><button onclick="App.closeModal()" style="background:none;border:none;cursor:pointer;color:#9CA3AF">'+ic('x')+'</button></div>'
+      +'<div style="font-size:13px;color:#6B7280;margin-bottom:8px">'+esc(fullName(hire))+(hire?.department?' · '+esc(hire.department):'')+'</div>'
+      +'<div style="font-size:12px;color:#6B7280">'+esc(_OB_ASG[s.assignee]||s.assignee)+' step · '+(s.kind==='document'?'document':'task')+'</div>'
+      +(s.note?'<div style="font-size:12px;color:#6B7280;margin-top:8px;background:#F9FAFB;border-radius:8px;padding:8px">'+esc(s.note)+'</div>':'')
+      +(x.status!=='Pending'?'<div style="font-size:12px;color:#6B7280;margin-top:8px">'+esc(x.status)+'</div>':'')
+      +(x.status==='Pending'?'<div style="display:flex;gap:8px;margin-top:14px"><button onclick="App.closeModal();App._inboxDecideOnboard(\''+esc(x.id)+'\',\'approve\')" style="flex:1;padding:10px;border-radius:10px;background:#0E9F6E;color:#fff;font-weight:700;border:none;cursor:pointer">Approve</button><button onclick="App.closeModal();App._inboxDecideOnboard(\''+esc(x.id)+'\',\'reject\')" style="flex:1;padding:10px;border-radius:10px;background:#fff;color:#B91C1C;font-weight:700;border:1px solid #FECACA;cursor:pointer">Reject</button></div>':'')
+      +'</div>','max-w-md');
+    return;
+  }
+  if(x.type==='submission'||x.type==='edit'){
+    const a=x.payload;
+    // reuse the existing submission viewer (checklist + photos)
+    let s=DB.submissions.find(z=>z.checklistId===a.checklistId&&z.userId===a.requesterId&&z.date===a.date);
+    if(s){App.viewSub(s.id);return;}
+    // fall back to the async loader used by the old page
+    const btn={dataset:{cl:a.checklistId,uid:a.requesterId,dt:a.date}};
+    App._viewSubFor(btn);
+    return;
+  }
+};
+// Leave decision from the inbox → native App.decideLeave at the current stage. The id is the
+// normalised 'lv-<reqId>'. We resolve the live stage so a stale row can't skip a stage.
+App._inboxDecide=(iid,action)=>{
+  const reqId=iid.replace(/^lv-/,'');
+  const r=(DB.leaveRequests||[]).find(z=>z.id===reqId);
+  if(!r){toast('Request not found','err');return;}
+  const si=(r.stageIndex!=null?r.stageIndex:0);
+  App.decideLeave(reqId,action,si);
+};
+// Bulk-approve every actionable Pending row of ONE type by looping the native handler. No new
+// decision path — each call carries all the native logic (reservation/notify/escalation).
+App._bulkApproveInbox=(type)=>{
+  const rows=_approvalInbox().filter(x=>x.type===type&&x.status==='Pending');
+  if(!rows.length){toast('Nothing to approve','warn');return;}
+  let n=0;
+  rows.forEach(x=>{
+    if(x._src.coll==='leaveRequests'){const r=(DB.leaveRequests||[]).find(z=>z.id===x._src.id);if(r&&r.status==='Pending'&&_canActOn(r)){App.decideLeave(r.id,'approve',(r.stageIndex!=null?r.stageIndex:0));n++;}}
+    else if(x._src.coll==='documents'){const d=(DB.documents||[]).find(z=>z.id===x._src.id);if(d&&d.approvalStatus==='pending'&&d.uploadedBy!==S.uid&&can('documentsOrg','approve')){App._doDecideDoc(d.id,'approve');n++;}}
+    else if(x._src.coll==='onboarding_instances'){const inst=(DB.onboardingInstances||[]).find(z=>z.id===x._src.id);const step=inst&&(inst.steps||[]).find(s=>s.id===x._src.stepId);if(inst&&step&&step.status==='submitted'&&inst.userId!==S.uid&&can('onboarding','approve')){App._decideOnboardStep(inst.id,step.id,'approve');n++;}}
+    else{const a=DB.approvals.find(z=>z.id===x._src.id);if(a&&a.status==='Pending'&&a.requesterId!==S.uid){App._decideApprove(a.id);n++;}}
+  });
+  toast(n+' approved ✓');
+  // native handlers each render; ensure a final fresh render from the inbox model
+  rr();
+};
+
 App._decide=async(id,status)=>{
   // Guard: cannot approve your own submission
   const _appr=DB.approvals.find(x=>x.id===id);
@@ -3808,7 +4104,7 @@ App._viewSubFor=async(btn)=>{
 /* ===== BOOT ===== */
 (async function boot(){
   const _hashRoute=(window.location.hash||'').replace('#','').trim();
-  const VALID_ROUTES=['dashboard','mychecklists','users','hierarchy','checklists','allcl','questions','approvals','notifications','analytics','locations','departments','settings','audit','teamview','profile','attendance','leave','hrmconfig','hrmanalytics','accesscontrol','announcements'];
+  const VALID_ROUTES=['dashboard','mychecklists','users','hierarchy','onboarding','checklists','allcl','questions','approvals','notifications','analytics','locations','departments','settings','audit','teamview','profile','attendance','leave','hrmconfig','hrmanalytics','accesscontrol','announcements'];
   const _deepLink=VALID_ROUTES.includes(_hashRoute)?_hashRoute:null;
   try{const{data:{session}}=await sb.auth.getSession();if(session){
       // Load local cache first for instant UI
@@ -4689,14 +4985,8 @@ function notificationsPage(){
   // Track which were unread BEFORE marking them (so the dot shows on this render)
   const unreadIds=new Set(notifs.filter(n=>!n.read).map(n=>n.id));
   const hadUnread=unreadIds.size>0;
-  // Mark as read after a short delay so user can see what was unread
-  if(hadUnread){
-    setTimeout(()=>{
-      notifs.forEach(n=>n.read=true);
-      _invalidateNotifCache();
-      saveDB();
-    },1500);
-  }
+  // A1: opening the inbox must NOT mark everything read. Single-row reads happen on tap
+  //     (App._notifClick → _markNotifRead); a whole-list flip is only via "Mark all read".
   // Feedback for this user
   const myFb=DB.feedback.filter(fb=>fb.userId===uid).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const unackFb=myFb.filter(fb=>!fb.acknowledged);
@@ -4737,6 +5027,8 @@ function notificationsPage(){
   };
 
   return '<div class="fade">'+hdr('Notifications','')
+    // A1: explicit "Mark all read" — the ONLY whole-list flip. Shown only when unread exist.
+    +(hadUnread?'<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button onclick="App._markAllNotifsRead()" style="padding:7px 14px;border-radius:9px;background:#F3F4F6;color:#374151;font-size:12px;font-weight:600;border:none;cursor:pointer">Mark all read</button></div>':'')
     // Tabs
     +'<div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap">'
     +TABS.map(t=>{
@@ -4773,9 +5065,29 @@ function notificationsPage(){
     +'</div>';
 }
 App._setNTab=(t)=>{S.filters.ntab=t;rr();};
+// A1: mark ONE notification read with a targeted server write — never re-upsert the whole array.
+function _markNotifRead(id){
+  const n=DB.notifications.find(x=>x.id===id);if(!n||n.read)return;
+  n.read=true;_invalidateNotifCache();saveDB();
+  sb.from('notifications').update({read:true}).eq('id',id)
+    .then(({error})=>{if(error)console.warn('[notif read]',error.message);})
+    .catch(e=>console.warn('[notif read]',e.message));
+}
+App._markAllNotifsRead=()=>{
+  const uid=S.uid;
+  const mine=DB.notifications.filter(n=>n.userId===uid&&!n.read);
+  if(!mine.length)return;
+  mine.forEach(n=>n.read=true);
+  _invalidateNotifCache();saveDB();
+  // ONE scoped server-side update — no per-row map.
+  sb.from('notifications').update({read:true}).eq('user_id',uid).eq('read',false)
+    .then(({error})=>{if(error){console.warn('[notif mark-all]',error.message);toast("Couldn't sync — check your connection",'err');}})
+    .catch(e=>{console.warn('[notif mark-all]',e.message);toast("Couldn't sync — check your connection",'err');});
+  toast('All marked read ✓');rr();
+};
 App._notifClick=(id)=>{
   const n=DB.notifications.find(x=>x.id===id);if(!n)return;
-  n.read=true;_invalidateNotifCache();saveDB();
+  _markNotifRead(id);
   const t=n.text||'';
   // Navigate first with clean filters, then set the tab
   if(t.includes('💬')||t.includes('replied')||t.includes('Feedback')){
@@ -5219,11 +5531,11 @@ App._confirmResolve=(id)=>{
     _invalidateNotifCache();
   }
   closeModal();saveDB();rr();
-  sb.from('tickets').update({status:'Resolved',resolved_at:t.resolvedAt,resolve_note:note}).eq('id',id).then(()=>{}).catch(e=>console.warn('resolve:',e.message));
+  sb.from('tickets').update({status:'Resolved',resolved_at:t.resolvedAt,resolve_note:note}).eq('id',id).then(({error})=>{if(error)_syncErr('ticket resolution')(error);}).catch(_syncErr('ticket resolution'));
 };
 
 App._delTicket=(id)=>{
-  if(!isAdmin())return;
+  if(!isAdmin()){toast('Not permitted','err');return;}
   DB.tickets=(DB.tickets||[]).filter(t=>t.id!==id);
   saveDB();rr();
   sb.from('tickets').delete().eq('id',id).then(()=>{}).catch(e=>console.warn('del ticket:',e.message));
@@ -5690,6 +6002,7 @@ App._uploadDoc=()=>{
     +'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:6px">Uploading…</div>'
     +'<div style="height:6px;background:#F3F4F6;border-radius:3px;overflow:hidden"><div id="ud-bar" style="height:100%;background:#0E9F6E;border-radius:3px;width:0%;transition:width .3s"></div></div>'
     +'</div>'
+    +'<label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;color:#374151;cursor:pointer"><input type="checkbox" id="ud-approval" style="width:16px;height:16px;cursor:pointer"> Require approval before this file is official</label>'
     +'<button id="ud-btn" onclick="App._doUpload()" style="width:100%;padding:12px;border-radius:12px;background:#15171C;color:#fff;font-weight:700;font-size:15px;border:none;cursor:pointer;display:none">Upload</button>'
     +'</div>',
     'max-w-md'
@@ -5734,21 +6047,26 @@ App._doUpload=async()=>{
   const scopeTab=S.filters.docScope||'dept';
   const scopeKey=S.filters.docScopeKey;
   const folderId=S.filters.docFolder||null;
+  const needsAppr=document.getElementById('ud-approval')?.checked;
   let done=0;
+  const _flagged=[];
   for(const file of files){
     const path=scopeTab+'/'+scopeKey+'/'+(folderId||'root')+'/'+Date.now()+'_'+file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
     const{data,error}=await sb.storage.from('documents').upload(path,file,{cacheControl:'3600',upsert:false});
     if(error){toast('Upload failed: '+error.message,'err');if(btn)btn.style.display='block';if(prog)prog.style.display='none';return;}
     const{data:urlData}=sb.storage.from('documents').getPublicUrl(path);
     if(!DB.documents)DB.documents=[];
-    const docObj={id:uid('doc'),name:file.name,folderId,type:scopeTab,scope:scopeKey,url:urlData?.publicUrl||path,storagePath:path,fileType:file.type,fileSize:file.size,uploadedBy:S.uid,uploaderName:fullName(me()),uploadedAt:new Date().toISOString()};
+    const docObj={id:uid('doc'),name:file.name,folderId,type:scopeTab,scope:scopeKey,url:urlData?.publicUrl||path,storagePath:path,fileType:file.type,fileSize:file.size,uploadedBy:S.uid,uploaderName:fullName(me()),uploadedAt:new Date().toISOString(),approvalStatus:needsAppr?'pending':null,approverId:null,decidedBy:null,decidedAt:null,decisionNote:null};
     DB.documents.push(docObj);
+    if(needsAppr)_flagged.push(docObj);
     // Insert directly to Supabase so refresh doesn't lose the file
-    await sb.from('documents').insert({id:docObj.id,name:docObj.name,folder_id:docObj.folderId||null,type:docObj.type,scope:docObj.scope,url:docObj.url,storage_path:docObj.storagePath,file_type:docObj.fileType,file_size:docObj.fileSize,uploaded_by:docObj.uploadedBy,uploader_name:docObj.uploaderName,uploaded_at:docObj.uploadedAt}).then(({error})=>{if(error)console.error('doc insert:',error.message);}).catch(()=>{});
+    await sb.from('documents').insert({id:docObj.id,name:docObj.name,folder_id:docObj.folderId||null,type:docObj.type,scope:docObj.scope,url:docObj.url,storage_path:docObj.storagePath,file_type:docObj.fileType,file_size:docObj.fileSize,uploaded_by:docObj.uploadedBy,uploader_name:docObj.uploaderName,uploaded_at:docObj.uploadedAt,approval_status:docObj.approvalStatus||null,approver_id:null,decided_by:null,decided_at:null,decision_note:null}).then(({error})=>{if(error)console.error('doc insert:',error.message);}).catch(()=>{});
     done++;
     if(bar)bar.style.width=Math.round(done/files.length*100)+'%';
   }
   log(fullName(me()),'Uploaded '+done+' file(s)',scopeKey);
+  // Notify the approver pool for each flagged doc (active org-doc approvers, not the uploader).
+  if(_flagged.length){const pool=_docApprovers(S.uid);_flagged.forEach(d=>pool.forEach(a=>_hrmNotify(a.id,'📄 '+fullName(me())+' needs your approval: '+d.name,'document')));}
   toast('Uploaded '+done+' file'+(done>1?'s':''));
   saveDB();closeModal();render();
 };
@@ -5781,6 +6099,318 @@ App._previewDoc=async(id)=>{
     window.open(url,'_blank','noopener');
   }
 };
+
+// ── Document approvals ──
+// Active users who can approve org docs (HR/Admin/granted), excluding the given uploader.
+function _docApprovers(exceptUid){
+  return (DB.users||[]).filter(u=>u.id!==exceptUid&&u.status==='Active'&&_canApproveDocAs(u));
+}
+// Does user `u` have documentsOrg.approve? (mirror can()/_hrFloor for an arbitrary user)
+function _canApproveDocAs(u){
+  if(!u)return false;
+  if(u.role==='Admin')return true;
+  if(u.hrm?.isHR)return true; // HR floor
+  const pid=u.hrm?.roleProfileId;const p=pid?(DB.roleProfiles?.[pid]||null):null;
+  if(p){const a=p.perms?.documentsOrg;return !!(a&&a.actions&&a.actions.approve);}
+  return false;
+}
+// Approve/reject a flagged org document. Gated on documentsOrg.approve + not the uploader.
+App._decideDoc=(id,action)=>{
+  const d=(DB.documents||[]).find(x=>x.id===id);
+  if(!d){toast('Doc not found','err');return;}
+  if(!can('documentsOrg','approve')){toast('Not permitted','err');return;}
+  if(d.uploadedBy===S.uid){toast('You cannot approve your own document','err');return;} // self-approve guard
+  if(d.approvalStatus!=='pending'){toast('Already decided','warn');rr();return;}
+  if(action==='reject'){
+    openModal('<div class="p-5"><div class="flex justify-between mb-3"><h2 class="fd text-lg font-bold">Reject document</h2><button onclick="App.closeModal()" class="text-ink-400">'+ic('x')+'</button></div>'
+      +'<div style="font-size:13px;color:#6B7280;margin-bottom:8px">'+esc(d.name)+'</div>'
+      +'<textarea id="doc-rnote" rows="3" class="w-full bg-white border border-ink-200 rounded-xl px-3 py-2.5 text-sm rf" placeholder="Reason for rejection (sent to uploader)"></textarea>'
+      +'<div class="flex gap-2 mt-4"><button onclick="App.closeModal()" style="flex:1;padding:11px;border-radius:12px;border:1.5px solid #ECEDF0;background:#fff;font-weight:600;cursor:pointer">Cancel</button><button onclick="App._doDecideDoc(\''+esc(d.id)+'\',\'reject\')" style="flex:1;padding:11px;border-radius:12px;background:#B91C1C;color:#fff;font-weight:600;border:none;cursor:pointer">Reject</button></div></div>');
+    return;
+  }
+  App._doDecideDoc(id,'approve');
+};
+// Commit the decision (note read from the reject modal when present).
+App._doDecideDoc=(id,action)=>{
+  const d=(DB.documents||[]).find(x=>x.id===id);
+  if(!d){toast('Doc not found','err');return;}
+  if(!can('documentsOrg','approve')){toast('Not permitted','err');return;}
+  if(d.uploadedBy===S.uid){toast('You cannot approve your own document','err');return;}
+  if(d.approvalStatus!=='pending'){toast('Already decided','warn');closeModal();rr();return;}
+  const note=action==='reject'?(document.getElementById('doc-rnote')?.value||'').trim():'';
+  d.approvalStatus=action==='approve'?'approved':'rejected';
+  d.decidedBy=S.uid;d.decidedAt=new Date().toISOString();d.decisionNote=note||null;
+  saveDB();
+  sb.from('documents').update({approval_status:d.approvalStatus,decided_by:d.decidedBy,decided_at:d.decidedAt,decision_note:d.decisionNote}).eq('id',id)
+    .then(({error})=>{if(error)_syncErr('document decision')(error);}).catch(_syncErr('document decision'));
+  _hrmNotify(d.uploadedBy,(action==='approve'?'✅ Your document "':'❌ Your document "')+d.name+'" was '+d.approvalStatus+(note?': '+note:'.'),'document');
+  hlog('Document '+d.approvalStatus,d.name+(note?' — '+note:''));
+  closeModal();toast(action==='approve'?'Approved ✓':'Rejected');rr();
+};
+
+/* ═══════════════ ONBOARDING (templates + per-hire instances) ═══════════════ */
+// snake_case row for the onboarding_instances table (mirrors the leave_requests upsert shape).
+function _obRow(i){return {id:i.id,template_id:i.templateId||null,user_id:i.userId,status:i.status||'active',steps:i.steps||[],created_by:i.createdBy||null,created_at:i.createdAt||new Date().toISOString(),completed_at:i.completedAt||null};}
+function _otRow(t){return {id:t.id,name:t.name||'',description:t.description||'',steps:t.steps||[],active:t.active!==false,created_by:t.createdBy||null,created_at:t.createdAt||new Date().toISOString()};}
+// progress roll-up: a step counts "done" when status is 'done' (task) or 'approved' (approval step).
+function _onboardingProgress(inst){const steps=(inst&&inst.steps)||[];const done=steps.filter(s=>s.status==='done'||s.status==='approved').length;return{done,total:steps.length};}
+// flip the instance to completed once every step is resolved (done/approved). Notifies once.
+function _checkOnboardingComplete(inst){
+  if(!inst||inst.status==='completed')return false;
+  const steps=inst.steps||[];if(!steps.length)return false;
+  if(!steps.every(s=>s.status==='done'||s.status==='approved'))return false;
+  inst.status='completed';inst.completedAt=new Date().toISOString();
+  _hrmNotify(inst.userId,'🎉 Your onboarding is complete!','onboarding');
+  // notify the HR/Admin/manager who started it (informational)
+  if(inst.createdBy&&inst.createdBy!==inst.userId)_hrmNotify(inst.createdBy,'🎉 '+fullName(uById(inst.userId))+' completed onboarding.','onboarding');
+  return true;
+}
+// targeted upsert for immediacy (don't wait for the 1.5s debounce) — mirrors the leave saver.
+function _saveOnboardingInstance(inst){if(typeof sb!=='undefined'&&sb)sb.from('onboarding_instances').upsert([_obRow(inst)],{onConflict:'id'}).then(({error})=>{if(error)_syncErr('onboarding')(error);}).catch(_syncErr('onboarding'));}
+function _saveOnboardingTemplate(t){if(typeof sb!=='undefined'&&sb)sb.from('onboarding_templates').upsert([_otRow(t)],{onConflict:'id'}).then(({error})=>{if(error)_syncErr('onboarding template')(error);}).catch(_syncErr('onboarding template'));}
+
+// ── Template CRUD (HR / can('onboarding','manage')) ──
+App._obTplEditor=(id)=>{
+  if(!can('onboarding','manage')){toast('Not permitted','err');return;}
+  const t=id?(DB.onboardingTemplates||[]).find(x=>x.id===id):null;
+  const steps=t?(t.steps||[]).slice():[];
+  // stash a working copy on a transient editor buffer so add/remove/reorder don't touch the live template
+  _OBE={id:id||null,name:t?t.name:'',description:t?t.description:'',steps:JSON.parse(JSON.stringify(steps))};
+  _obRenderTplModal();
+};
+let _OBE=null;
+function _obRenderTplModal(){
+  const e=_OBE;if(!e)return;
+  const kindOpts=[['task','Task (mark done)'],['document','Document (attach / note)']];
+  const asgOpts=[['employee','New hire'],['hr','HR'],['manager','Manager']];
+  const stepRows=e.steps.map((s,idx)=>'<div style="background:#F9FAFB;border:1px solid #ECEDF0;border-radius:12px;padding:10px;margin-bottom:8px">'
+    +'<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><input id="obs-title-'+idx+'" value="'+esc(s.title||'')+'" placeholder="Step title" class="rf" style="flex:1;background:#fff;border:1px solid #ECEDF0;border-radius:8px;padding:7px 9px;font-size:13px"/>'
+    +'<button onclick="App._obStepMove('+idx+',-1)" title="Up" style="width:28px;height:28px;border:1px solid #ECEDF0;background:#fff;border-radius:8px;cursor:pointer">↑</button>'
+    +'<button onclick="App._obStepMove('+idx+',1)" title="Down" style="width:28px;height:28px;border:1px solid #ECEDF0;background:#fff;border-radius:8px;cursor:pointer">↓</button>'
+    +'<button onclick="App._obStepDel('+idx+')" title="Remove" style="width:28px;height:28px;border:1px solid #FECACA;color:#B91C1C;background:#fff;border-radius:8px;cursor:pointer">✕</button></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +'<select id="obs-kind-'+idx+'" class="rf" style="background:#fff;border:1px solid #ECEDF0;border-radius:8px;padding:6px 8px;font-size:12px">'+kindOpts.map(o=>'<option value="'+o[0]+'"'+(s.kind===o[0]?' selected':'')+'>'+esc(o[1])+'</option>').join('')+'</select>'
+    +'<select id="obs-asg-'+idx+'" class="rf" style="background:#fff;border:1px solid #ECEDF0;border-radius:8px;padding:6px 8px;font-size:12px">'+asgOpts.map(o=>'<option value="'+o[0]+'"'+(s.assignee===o[0]?' selected':'')+'>'+esc(o[1])+'</option>').join('')+'</select>'
+    +'<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#374151"><input type="checkbox" id="obs-appr-'+idx+'"'+(s.requiresApproval?' checked':'')+'/> Requires approval</label>'
+    +'</div></div>').join('');
+  openModal('<div class="p-5"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h2 class="fd" style="font-size:18px;font-weight:800">'+(e.id?'Edit':'New')+' onboarding template</h2><button onclick="App.closeModal()" style="background:none;border:none;cursor:pointer;color:#9CA3AF">'+ic('x')+'</button></div>'
+    +fld('Template name','obt-name',e.name,'text','e.g. Standard new hire')
+    +'<div style="margin-top:8px">'+fld('Description','obt-desc',e.description,'text','')+'</div>'
+    +'<div style="margin-top:12px"><p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9CA3AF;margin-bottom:8px">Steps</p>'+(stepRows||'<p style="font-size:12px;color:#9CA3AF;margin-bottom:8px">No steps yet.</p>')
+    +'<button onclick="App._obStepAdd()" style="width:100%;padding:9px;border-radius:10px;border:1px dashed #CBD5E1;background:#fff;font-weight:600;font-size:13px;cursor:pointer;color:#374151">+ Add step</button></div>'
+    +'<div style="display:flex;gap:8px;margin-top:16px"><button onclick="App.closeModal()" style="flex:1;padding:11px;border-radius:12px;border:1.5px solid #ECEDF0;background:#fff;font-weight:600;cursor:pointer">Cancel</button><button onclick="App._obTplSave()" style="flex:1;padding:11px;border-radius:12px;background:#15171C;color:#fff;font-weight:600;border:none;cursor:pointer">Save template</button></div></div>','max-w-lg');
+}
+// read the current DOM step values back into the buffer before any structural change/re-render
+function _obSyncBuffer(){
+  if(!_OBE)return;
+  _OBE.name=($('#obt-name')?.value||'').trim();
+  _OBE.description=($('#obt-desc')?.value||'').trim();
+  _OBE.steps.forEach((s,idx)=>{
+    const ti=$('#obs-title-'+idx);if(ti)s.title=ti.value.trim();
+    const k=$('#obs-kind-'+idx);if(k)s.kind=k.value;
+    const a=$('#obs-asg-'+idx);if(a)s.assignee=a.value;
+    const ap=$('#obs-appr-'+idx);if(ap)s.requiresApproval=ap.checked;
+  });
+}
+App._obStepAdd=()=>{_obSyncBuffer();_OBE.steps.push({id:uid('obs'),title:'',kind:'task',assignee:'employee',requiresApproval:false});_obRenderTplModal();};
+App._obStepDel=(idx)=>{_obSyncBuffer();_OBE.steps.splice(idx,1);_obRenderTplModal();};
+App._obStepMove=(idx,dir)=>{_obSyncBuffer();const j=idx+dir;if(j<0||j>=_OBE.steps.length)return;const s=_OBE.steps[idx];_OBE.steps[idx]=_OBE.steps[j];_OBE.steps[j]=s;_obRenderTplModal();};
+App._obTplSave=()=>{
+  if(!can('onboarding','manage')){toast('Not permitted','err');return;}
+  _obSyncBuffer();const e=_OBE;if(!e){return;}
+  if(!e.name){toast('Template name required','err');return;}
+  const steps=e.steps.filter(s=>s.title).map(s=>({id:s.id||uid('obs'),title:s.title,kind:s.kind==='document'?'document':'task',assignee:['employee','hr','manager'].includes(s.assignee)?s.assignee:'employee',requiresApproval:!!s.requiresApproval}));
+  if(!steps.length){toast('Add at least one step','err');return;}
+  if(!Array.isArray(DB.onboardingTemplates))DB.onboardingTemplates=[];
+  let t=e.id?DB.onboardingTemplates.find(x=>x.id===e.id):null;
+  if(t){Object.assign(t,{name:e.name,description:e.description,steps});}
+  else{t={id:uid('obt'),name:e.name,description:e.description,steps,active:true,createdBy:S.uid,createdAt:new Date().toISOString()};DB.onboardingTemplates.push(t);}
+  _OBE=null;saveDB();_saveOnboardingTemplate(t);hlog('Onboarding template saved',t.name);closeModal();toast('Template saved ✓');rr();
+};
+App._obTplDel=(id)=>{
+  if(!can('onboarding','manage')){toast('Not permitted','err');return;}
+  const t=(DB.onboardingTemplates||[]).find(x=>x.id===id);if(!t)return;
+  if(!confirm('Delete template "'+t.name+'"? In-flight onboardings keep their own copy.'))return;
+  DB.onboardingTemplates=(DB.onboardingTemplates||[]).filter(x=>x.id!==id);
+  saveDB();if(typeof sb!=='undefined'&&sb)sb.from('onboarding_templates').delete().eq('id',id).then(()=>{}).catch(_syncErr('onboarding template'));
+  hlog('Onboarding template deleted',t.name);toast('Deleted','warn');rr();
+};
+
+// ── Instance creation (snapshot the template's steps into a new instance) ──
+App._obStart=(userId,templateId)=>{
+  if(!can('onboarding','manage')){toast('Not permitted','err');return;}
+  const u=uById(userId);if(!u){toast('User not found','err');return;}
+  // if no template chosen yet, open a picker
+  const tpls=(DB.onboardingTemplates||[]).filter(t=>t.active!==false);
+  if(!templateId){
+    if(!tpls.length){toast('Create a template first','warn');return;}
+    openModal('<div class="p-5"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h2 class="fd" style="font-size:18px;font-weight:800">Start onboarding</h2><button onclick="App.closeModal()" style="background:none;border:none;cursor:pointer;color:#9CA3AF">'+ic('x')+'</button></div>'
+      +'<div style="font-size:13px;color:#6B7280;margin-bottom:10px">For <strong>'+esc(fullName(u))+'</strong></div>'
+      +selF('Template','obstart-tpl',tpls.map(t=>[t.id,t.name+' ('+(t.steps||[]).length+' steps)']),tpls[0].id)
+      +'<div style="display:flex;gap:8px;margin-top:16px"><button onclick="App.closeModal()" style="flex:1;padding:11px;border-radius:12px;border:1.5px solid #ECEDF0;background:#fff;font-weight:600;cursor:pointer">Cancel</button><button onclick="App._obStart(\''+esc(userId)+'\',document.getElementById(\'obstart-tpl\').value)" style="flex:1;padding:11px;border-radius:12px;background:#15171C;color:#fff;font-weight:600;border:none;cursor:pointer">Start</button></div></div>','max-w-sm');
+    return;
+  }
+  const tpl=(DB.onboardingTemplates||[]).find(t=>t.id===templateId);if(!tpl){toast('Template not found','err');return;}
+  // SNAPSHOT steps + init per-step state (template edits later never mutate this instance)
+  const steps=(tpl.steps||[]).map(s=>({id:s.id,title:s.title,kind:s.kind,assignee:s.assignee,requiresApproval:!!s.requiresApproval,status:'pending',docId:null,doneBy:null,doneAt:null,decidedBy:null,decidedAt:null,note:null}));
+  const inst={id:uid('obi'),templateId:tpl.id,userId,status:'active',steps,createdBy:S.uid,createdAt:new Date().toISOString(),completedAt:null};
+  if(!Array.isArray(DB.onboardingInstances))DB.onboardingInstances=[];
+  DB.onboardingInstances.push(inst);
+  saveDB();_saveOnboardingInstance(inst);
+  _hrmNotify(userId,'👋 Your onboarding has started — '+steps.length+' step'+(steps.length===1?'':'s')+' to complete.','onboarding');
+  hlog('Onboarding started',fullName(u)+' · '+tpl.name);
+  closeModal();toast('Onboarding started ✓');rr();
+};
+
+// ── Employee completes an assigned (non-approval) step → done; approval step → submitted ──
+App._obStepComplete=(instId,stepId)=>{
+  const inst=(DB.onboardingInstances||[]).find(i=>i.id===instId);if(!inst){toast('Not found','err');return;}
+  const step=(inst.steps||[]).find(s=>s.id===stepId);if(!step){toast('Step not found','err');return;}
+  // who may complete: the hire (own instance) or an elevated user managing it
+  const isHire=inst.userId===S.uid;
+  if(!isHire&&!(can('onboarding','manage')&&(scopeFilter('onboarding')(inst.userId)||isAdmin()))){toast('Not permitted','err');return;}
+  if(step.status!=='pending'&&step.status!=='rejected'){rr();return;}
+  // document step: capture an optional note/reference (MVP — minimal, functional)
+  if(step.kind==='document'&&!step._noteCaptured){
+    openModal('<div class="p-5"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h2 class="fd" style="font-size:18px;font-weight:800">'+esc(step.title)+'</h2><button onclick="App.closeModal()" style="background:none;border:none;cursor:pointer;color:#9CA3AF">'+ic('x')+'</button></div>'
+      +'<div style="font-size:12px;color:#6B7280;margin-bottom:8px">Attach a reference or note for this document step.</div>'
+      +'<textarea id="ob-docnote" rows="3" class="rf" style="width:100%;background:#fff;border:1px solid #ECEDF0;border-radius:10px;padding:9px;font-size:13px" placeholder="Link / note (optional)"></textarea>'
+      +'<div style="display:flex;gap:8px;margin-top:14px"><button onclick="App.closeModal()" style="flex:1;padding:10px;border-radius:10px;border:1.5px solid #ECEDF0;background:#fff;font-weight:600;cursor:pointer">Cancel</button><button onclick="App._obStepCompleteDo(\''+esc(instId)+'\',\''+esc(stepId)+'\',(document.getElementById(\'ob-docnote\')?.value||\'\').trim())" style="flex:1;padding:10px;border-radius:10px;background:#15171C;color:#fff;font-weight:600;border:none;cursor:pointer">Submit</button></div></div>','max-w-sm');
+    return;
+  }
+  App._obStepCompleteDo(instId,stepId,'');
+};
+App._obStepCompleteDo=(instId,stepId,note)=>{
+  const inst=(DB.onboardingInstances||[]).find(i=>i.id===instId);if(!inst){toast('Not found','err');return;}
+  const step=(inst.steps||[]).find(s=>s.id===stepId);if(!step){toast('Step not found','err');return;}
+  const isHire=inst.userId===S.uid;
+  if(!isHire&&!(can('onboarding','manage')&&(scopeFilter('onboarding')(inst.userId)||isAdmin()))){toast('Not permitted','err');return;}
+  if(step.status!=='pending'&&step.status!=='rejected'){closeModal();rr();return;}
+  if(note)step.note=note;
+  step.doneBy=S.uid;step.doneAt=new Date().toISOString();
+  if(step.requiresApproval){
+    step.status='submitted';
+    // notify approvers (HR/Admin + the hire's manager who can approve onboarding)
+    const pool=DB.users.filter(a=>a.status==='Active'&&a.id!==inst.userId&&_canApproveOnboardingAs(a)&&_canApproverSeeHire(a,inst.userId));
+    pool.forEach(a=>_hrmNotify(a.id,'🚀 '+fullName(uById(inst.userId))+' submitted "'+step.title+'" for approval.','onboarding'));
+  }else{
+    step.status='done';
+  }
+  _checkOnboardingComplete(inst);
+  saveDB();_saveOnboardingInstance(inst);
+  closeModal();toast(step.status==='submitted'?'Submitted for approval ✓':'Marked done ✓');rr();
+};
+
+// Can user `a` approve onboarding steps? (mirror _canApproveDocAs for an arbitrary user)
+function _canApproveOnboardingAs(u){
+  if(!u)return false;
+  if(u.role==='Admin')return true;
+  if(u.hrm?.isHR)return true; // HR floor
+  const pid=u.hrm?.roleProfileId;const p=pid?(DB.roleProfiles?.[pid]||null):null;
+  if(p){const a=p.perms?.onboarding;return !!(a&&a.actions&&a.actions.approve);}
+  return false;
+}
+// Conservative scope: an approver who is HR/Admin sees all hires; a plain manager-approver only their subtree.
+function _canApproverSeeHire(approver,hireId){
+  if(!approver)return false;
+  if(approver.role==='Admin'||approver.role==='SubAdmin'||approver.hrm?.isHR)return true;
+  return subTree(approver.id).some(u=>u.id===hireId);
+}
+
+// ── Decide an approval step (HR/Admin/manager with onboarding.approve, not the hire) ──
+App._decideOnboardStep=(instId,stepId,action)=>{
+  if(!can('onboarding','approve')){toast('Not permitted','err');return;}
+  const inst=(DB.onboardingInstances||[]).find(i=>i.id===instId);if(!inst){toast('Not found','err');return;}
+  const step=(inst.steps||[]).find(s=>s.id===stepId);if(!step){toast('Step not found','err');return;}
+  if(inst.userId===S.uid){toast('You cannot approve your own onboarding','err');return;}
+  if(!(scopeFilter('onboarding')(inst.userId)||isAdmin()||(isHR()))){toast('Out of scope','err');return;}
+  if(step.status!=='submitted'){toast('Already decided','warn');rr();return;}
+  step.status=action==='approve'?'approved':'rejected';
+  step.decidedBy=S.uid;step.decidedAt=new Date().toISOString();
+  _checkOnboardingComplete(inst);
+  saveDB();_saveOnboardingInstance(inst);
+  _hrmNotify(inst.userId,(action==='approve'?'✅ ':'❌ ')+'Onboarding step "'+step.title+'" was '+step.status+'.','onboarding');
+  hlog('Onboarding step '+step.status,fullName(uById(inst.userId))+' · '+step.title);
+  closeModal();toast(action==='approve'?'Approved ✓':'Rejected');rr();
+};
+// Inbox forwarder — parses 'ob-<instId>-<stepId>' (instId/stepId never contain '-' beyond their own; we split on the FIRST two segments).
+App._inboxDecideOnboard=(iid,action)=>{
+  const m=iid.match(/^ob-(.+?)-(obs_.+)$/);
+  if(!m){toast('Bad onboarding id','err');return;}
+  App._decideOnboardStep(m[1],m[2],action);
+};
+
+// ── A small progress bar for an instance ──
+function _obProgressBar(inst){
+  const{done,total}=_onboardingProgress(inst);
+  const pct=total?Math.round(done/total*100):0;
+  return '<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:7px;border-radius:4px;background:#ECEDF0;overflow:hidden"><div style="height:100%;border-radius:4px;width:'+pct+'%;background:'+(pct>=100?'#0E9F6E':pct>=50?'#F59E0B':'#3B82F6')+'"></div></div><span style="font-size:12px;font-weight:700;color:#374151;white-space:nowrap">'+done+'/'+total+' steps done</span></div>';
+}
+const _OB_ASG={employee:'New hire',hr:'HR',manager:'Manager'};
+const _OB_STEP_CHIP={pending:'Pending',submitted:'Submitted',approved:'Approved',rejected:'Rejected',done:'Approved'};
+// One instance rendered as a step list. `actor` decides which complete/decide buttons appear.
+function _obInstanceCard(inst,opts){
+  opts=opts||{};
+  const hire=uById(inst.userId);
+  const canManage=can('onboarding','manage')&&(scopeFilter('onboarding')(inst.userId)||isAdmin()||isHR());
+  const canApprove=can('onboarding','approve')&&inst.userId!==S.uid&&(scopeFilter('onboarding')(inst.userId)||isAdmin()||isHR());
+  const isHire=inst.userId===S.uid;
+  const rows=(inst.steps||[]).map(s=>{
+    const stLabel=_OB_STEP_CHIP[s.status]||'Pending';
+    // hire can act on their own pending/rejected steps they're assigned (employee) ; managers can complete manager-assigned
+    const hireCan=isHire&&s.assignee==='employee'&&(s.status==='pending'||s.status==='rejected');
+    const mgrCan=!isHire&&canManage&&(s.status==='pending'||s.status==='rejected');
+    const approverCan=canApprove&&s.status==='submitted'&&s.requiresApproval;
+    let btns='';
+    if(hireCan||mgrCan)btns='<button onclick="App._obStepComplete(\''+esc(inst.id)+'\',\''+esc(s.id)+'\')" style="padding:6px 12px;border-radius:9px;background:#15171C;color:#fff;font-weight:700;font-size:12px;border:none;cursor:pointer">'+(s.kind==='document'?'Attach':(s.requiresApproval?'Submit':'Mark done'))+'</button>';
+    if(approverCan)btns='<button onclick="App._decideOnboardStep(\''+esc(inst.id)+'\',\''+esc(s.id)+'\',\'approve\')" style="padding:6px 12px;border-radius:9px;background:#0E9F6E;color:#fff;font-weight:700;font-size:12px;border:none;cursor:pointer">Approve</button><button onclick="App._decideOnboardStep(\''+esc(inst.id)+'\',\''+esc(s.id)+'\',\'reject\')" style="padding:6px 12px;border-radius:9px;background:#fff;color:#B91C1C;font-weight:700;font-size:12px;border:1px solid #FECACA;cursor:pointer;margin-left:6px">Reject</button>';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #F3F4F6">'
+      +'<span style="font-size:16px">'+(s.kind==='document'?'📎':'✓')+'</span>'
+      +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:#111">'+esc(s.title)+'</div>'
+      +'<div style="font-size:11px;color:#9CA3AF">'+esc(_OB_ASG[s.assignee]||s.assignee)+(s.requiresApproval?' · needs approval':'')+(s.note?' · '+esc(s.note):'')+'</div></div>'
+      +chip(stLabel)+(btns?'<div style="flex-shrink:0">'+btns+'</div>':'')+'</div>';
+  }).join('');
+  return '<div class="bg-white rounded-2xl border border-ink-100 shadow-soft" style="padding:16px;margin-bottom:12px">'
+    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'+(opts.showHire!==false?avatar(hire,'w-9 h-9','text-xs')+'<div style="flex:1"><div style="font-weight:700;font-size:14px">'+esc(fullName(hire))+'</div><div style="font-size:11px;color:#9CA3AF">'+esc(hire?.department||'')+'</div></div>':'<div style="flex:1"><div style="font-weight:700;font-size:14px">Your onboarding</div></div>')
+    +chip(inst.status==='completed'?'Approved':'Active')+'</div>'
+    +_obProgressBar(inst)
+    +'<div style="margin-top:6px">'+rows+'</div></div>';
+}
+// HR/manager Onboarding page: Templates sub-tab + People sub-tab.
+function onboardingPage(){
+  const sub=S.filters.obtab||'People';
+  const canManage=can('onboarding','manage');
+  const tabBtn=(t)=>'<button onclick="App._obSetTab(\''+t+'\')" style="padding:8px 16px;border-radius:10px;font-size:14px;font-weight:600;border:none;cursor:pointer;background:'+(sub===t?'#15171C':'transparent')+';color:'+(sub===t?'#fff':'#6B7280')+'">'+t+'</button>';
+  let body='';
+  if(sub==='Templates'&&canManage){
+    const tpls=DB.onboardingTemplates||[];
+    body=(tpls.length?tpls.map(t=>'<div class="bg-white rounded-2xl border border-ink-100 shadow-soft" style="padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:10px">'
+      +'<div style="flex:1"><div style="font-weight:700;font-size:14px">'+esc(t.name)+'</div><div style="font-size:12px;color:#9CA3AF">'+(t.steps||[]).length+' step'+((t.steps||[]).length===1?'':'s')+(t.description?' · '+esc(t.description):'')+'</div></div>'
+      +'<button onclick="App._obTplEditor(\''+esc(t.id)+'\')" style="padding:7px 12px;border-radius:9px;border:1px solid #ECEDF0;background:#fff;font-weight:600;font-size:13px;cursor:pointer">Edit</button>'
+      +'<button onclick="App._obTplDel(\''+esc(t.id)+'\')" style="padding:7px 10px;border-radius:9px;border:1px solid #FECACA;color:#B91C1C;background:#fff;font-weight:600;font-size:13px;cursor:pointer">Delete</button></div>').join('')
+      :empty('list','No templates','Create your first onboarding template.'));
+  }else{
+    // People: instances in scope (HR/Admin all; managers their subtree)
+    let insts=(DB.onboardingInstances||[]).filter(i=>i.userId===S.uid||scopeFilter('onboarding')(i.userId)||isAdmin()||isHR());
+    insts=insts.slice().sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+    body=(insts.length?insts.map(i=>_obInstanceCard(i,{})).join('')
+      :empty('users','No onboarding in progress',canManage?'Start one from a user record (Users → ⋯ → Start onboarding).':'No one in your scope is onboarding yet.'));
+  }
+  const startBtn=canManage?btnP('New template','App._obTplEditor()','plus'):'';
+  return '<div class="fade">'+hdr('Onboarding',canManage?'Templates & new-hire progress':'New-hire progress',startBtn)
+    +'<div style="display:flex;gap:6px;margin-bottom:14px;background:#F6F7F8;padding:4px;border-radius:12px;width:fit-content">'+tabBtn('People')+(canManage?tabBtn('Templates'):'')+'</div>'
+    +body+'</div>';
+}
+App._obSetTab=(t)=>{S.filters.obtab=t;rr();};
+// Employee dashboard card: the hire's own active onboarding (if any).
+function _myOnboardingCard(){
+  const mine=(DB.onboardingInstances||[]).filter(i=>i.userId===S.uid&&i.status!=='cancelled');
+  if(!mine.length)return '';
+  const active=mine.find(i=>i.status==='active')||mine[mine.length-1];
+  return '<div style="margin-bottom:16px">'+_obInstanceCard(active,{showHire:false})+'</div>';
+}
+
+/* ═══════════════ end ONBOARDING ═══════════════ */
 
 App._delDoc=(id)=>{
   const doc=(DB.documents||[]).find(x=>x.id===id);if(!doc||!confirm('Delete "'+doc.name+'"?'))return;
@@ -5887,6 +6517,15 @@ const EMAIL_EVENTS=[
   {key:'approval_decided', label:'Approval decided',     vars:'{{user_name}}, {{checklist_name}}, {{action_url}}'},
   {key:'feedback_received',label:'Feedback received',    vars:'{{user_name}}, {{checklist_name}}, {{action_url}}'},
   {key:'deadline_reminder',label:'Deadline reminder',    vars:'{{user_name}}, {{checklist_name}}, {{action_url}}'},
+  // ── HRM (Attendance & Leave) templates — gated by the HR-email master switch + per-event toggle. ──
+  {key:'hrm_leave_submitted',label:'HR · Leave — approval needed',vars:'{{approver_name}}, {{user_name}}, {{leave_type}}, {{start_date}}, {{end_date}}, {{working_days}}, {{reason}}, {{action_url}}'},
+  {key:'hrm_leave_approved', label:'HR · Leave — approved',       vars:'{{user_name}}, {{leave_type}}, {{start_date}}, {{end_date}}, {{working_days}}, {{approver_name}}, {{balance}}, {{action_url}}'},
+  {key:'hrm_leave_rejected', label:'HR · Leave — rejected',       vars:'{{user_name}}, {{leave_type}}, {{start_date}}, {{end_date}}, {{approver_name}}, {{reason}}, {{action_url}}'},
+  {key:'hrm_leave_escalated',label:'HR · Leave — escalated',      vars:'{{user_name}}, {{leave_type}}, {{start_date}}, {{end_date}}, {{working_days}}, {{action_url}}'},
+  {key:'hrm_late',           label:'HR · Attendance — late',      vars:'{{user_name}}, {{date}}, {{time}}, {{action_url}}'},
+  {key:'hrm_early',          label:'HR · Attendance — early out', vars:'{{user_name}}, {{date}}, {{time}}, {{action_url}}'},
+  {key:'hrm_auto_closed',    label:'HR · Attendance — missed clock-out',vars:'{{user_name}}, {{date}}, {{action_url}}'},
+  {key:'hrm_comp_off',       label:'HR · Comp-off granted',       vars:'{{user_name}}, {{days}}, {{reason}}, {{expiry}}, {{approver_name}}, {{action_url}}'},
 ];
 
 function _defaultTemplates(){
@@ -5899,6 +6538,23 @@ function _defaultTemplates(){
     approval_decided: {subject:'Approval update: {{checklist_name}}',          body:'Hi {{user_name}},\n\nYour approval request for {{checklist_name}} has been decided.\n\n{{action_url}}'},
     feedback_received:{subject:'💬 New feedback received',                      body:'Hi {{user_name}},\n\nYou have received new feedback on {{checklist_name}}.\n\n{{action_url}}'},
     deadline_reminder:{subject:'⏳ Reminder: {{checklist_name}} deadline soon', body:'Hi {{user_name}},\n\nYour checklist {{checklist_name}} deadline is approaching soon. Please complete it before the cutoff.\n\n{{action_url}}'},
+    // ── HRM templates — consistent subject + clean body with resolved variables. ──
+    hrm_leave_submitted:{subject:'🔔 Leave approval needed: {{user_name}} — {{leave_type}}',
+      body:'Hi {{approver_name}},\n\n{{user_name}} has requested {{leave_type}} and needs your approval.\n\nDates: {{start_date}} → {{end_date}} ({{working_days}})\nReason: {{reason}}\n\nReview and decide in Shiftly.\n\n{{action_url}}'},
+    hrm_leave_approved:{subject:'✅ Leave approved: {{leave_type}} ({{start_date}} → {{end_date}})',
+      body:'Hi {{user_name}},\n\nYour {{leave_type}} request has been approved.\n\nDates: {{start_date}} → {{end_date}} ({{working_days}})\nApproved by: {{approver_name}}\nRemaining balance: {{balance}}\n\n{{action_url}}'},
+    hrm_leave_rejected:{subject:'❌ Leave rejected: {{leave_type}} ({{start_date}} → {{end_date}})',
+      body:'Hi {{user_name}},\n\nYour {{leave_type}} request for {{start_date}} → {{end_date}} was not approved.\n\nDecided by: {{approver_name}}\nReason: {{reason}}\n\nPlease reach out to your approver if you have questions.\n\n{{action_url}}'},
+    hrm_leave_escalated:{subject:'⚠️ Leave needs review: {{user_name}} — {{leave_type}}',
+      body:'Hi,\n\n{{user_name}}\'s {{leave_type}} request ({{start_date}} → {{end_date}}, {{working_days}}) has no configured approver and has been escalated to HR / Admin for review.\n\n{{action_url}}'},
+    hrm_late:{subject:'⚠️ Late clock-in on {{date}}',
+      body:'Hi {{user_name}},\n\nOur records show you clocked in late at {{time}} on {{date}}.\n\nIf this is incorrect, please contact HR.\n\n{{action_url}}'},
+    hrm_early:{subject:'⚠️ Early clock-out on {{date}}',
+      body:'Hi {{user_name}},\n\nOur records show you clocked out early at {{time}} on {{date}}.\n\nIf this is incorrect, please contact HR.\n\n{{action_url}}'},
+    hrm_auto_closed:{subject:'⏱ Missed clock-out on {{date}}',
+      body:'Hi {{user_name}},\n\nYou didn\'t clock out on {{date}}, so your shift was auto-closed at midnight. Please remember to clock out at the end of your shift.\n\n{{action_url}}'},
+    hrm_comp_off:{subject:'🎁 Comp-off granted: {{days}}',
+      body:'Hi {{user_name}},\n\nYou\'ve been granted {{days}} of comp-off leave.\n\nReason: {{reason}}\nExpiry: {{expiry}}\nGranted by: {{approver_name}}\n\n{{action_url}}'},
   };
 }
 
@@ -5957,6 +6613,8 @@ function _bodyToHtml(fromName, bodyText, actionUrl=''){
     :ctaUrl.includes('notifications')?'View Notifications'
     :ctaUrl.includes('settings')?'Open Settings'
     :ctaUrl.includes('analytics')?'View Analytics'
+    :ctaUrl.includes('leave')?'View Leave'
+    :ctaUrl.includes('attendance')?'View Attendance'
     :'Open Shiftly';
   return`<!DOCTYPE html><html><body style="margin:0;padding:0;background:#F7F6F2;font-family:sans-serif">
   <div style="max-width:520px;margin:32px auto;background:#fff;border-radius:16px;border:1px solid #ECEDF0;overflow:hidden">
@@ -5996,6 +6654,10 @@ async function sendEmail(eventType, userId, vars){
     submission_rejected:'mychecklists', approval_requested:'approvals',
     approval_decided:'approvals', feedback_received:'notifications',
     deadline_reminder:'mychecklists',
+    // HRM: approval-needed → approvals; everything else for the employee → leave page.
+    hrm_leave_submitted:'approvals', hrm_leave_escalated:'approvals',
+    hrm_leave_approved:'leave', hrm_leave_rejected:'leave', hrm_comp_off:'leave',
+    hrm_late:'attendance', hrm_early:'attendance', hrm_auto_closed:'attendance',
   };
   const actionUrl = appUrl + '/#' + (routeMap[eventType]||'');
   const allVars = {user_name:fullName(user), from_name:_ns.email_from_name||'Shiftly', app_url:appUrl, action_url:actionUrl, ...vars};
@@ -6573,7 +7235,7 @@ function _runAutoClose(){
       rec.hours=computeHours(rec);
       const fl=new Set(rec.flags||[]);fl.add('auto-closed');fl.add('forgot-clockout');rec.flags=[...fl];
       if(_hnp('inapp_hrm_missed_clockout'))_hrmNotify(rec.userId,'⏱ Your '+fmtD(rec.date)+' clock-out was auto-closed at midnight (you forgot to clock out).');
-      if(_hnpEmail('email_hrm_missed_clockout'))queueEmail('hrm_auto_closed',rec.userId,null,rec.date,{date:rec.date});
+      if(_hnpEmail('email_hrm_missed_clockout'))queueEmail('hrm_auto_closed',rec.userId,null,rec.date,{user_name:fullName(uById(rec.userId)),date:fmtD(rec.date)});
       changed=true;
     }
   });
@@ -6770,7 +7432,7 @@ App.clockIn=()=>{
     _applyFlags(rec);
     saveDB();
     if(rec.flags.includes('late')&&_hnp('inapp_hrm_late'))_hrmNotify(uId,'⚠️ You clocked in late at '+_m2hm(m)+' on '+fmtD(date)+'.');
-    if(rec.flags.includes('late')&&_hnpEmail('email_hrm_late'))queueEmail('hrm_late',uId,null,date,{time:_m2hm(m)});
+    if(rec.flags.includes('late')&&_hnpEmail('email_hrm_late'))queueEmail('hrm_late',uId,null,date,{user_name:fullName(uById(uId)),date:fmtD(date),time:_m2hm(m)});
     toast('Clocked in at '+_m2hm(m)+' ✓');rr();
   };
   _withGeofence('in',_record);
@@ -7022,12 +7684,161 @@ function _escalateStranded(req,msg){
   if(fallback.length){
     req.needsAdmin=true;
     if(_hnp('inapp_hrm_leave_submitted'))fallback.forEach(a=>_hrmNotify(a.id,msg,'leave'));
+    // C3: email HR/Admin the escalation with structured detail (gated by the approval-routing email toggle).
+    if(_hnpEmail('email_hrm_leave_submitted')){const _emp=uById(submitterId),_lt=ltById(req.leaveTypeId);fallback.forEach(a=>queueEmail('hrm_leave_escalated',a.id,null,req.start,{user_name:fullName(_emp),leave_type:_lt?_lt.name:'leave',start_date:fmtD(req.start),end_date:fmtD(req.end),working_days:req.workingDays+(req.workingDays===1?' day':' days')}));}
   }
   return fallback.length;
 }
 // §2: counts are driven by the current-stage approver (handles custom flows incl. named approvers).
 function _mgrPendingCount(){return (DB.leaveRequests||[]).filter(r=>r.status==='Pending'&&_stageTab(r)==='manager'&&_canActOn(r)).length;}
 function _hrPendingCount(){return (DB.leaveRequests||[]).filter(r=>r.status==='Pending'&&_stageTab(r)==='hr'&&_canActOn(r)).length;}
+
+// ── B3: UNIFIED APPROVALS INBOX (Approach B = view layer) ─────────────────────────────
+// Read-only adapter: reads pending/decided items from each EXISTING approval source and
+// normalises them to a common shape. Decisions still route back to the NATIVE handlers
+// (decideLeave / _decideApprove / _decideReject) so all reservation/notify/escalation
+// logic is preserved. NO table migration. Scope mirrors each source's own visibility, so
+// the inbox never widens what the user can already see/act on.
+// Normalised item: {id,type,requestedBy,assignedTo,subject,payload,status,decidedBy,
+//   decidedAt,location,dept,_src:{coll,id}}  where type ∈ leave|submission|edit|document|
+//   onboarding. (document/onboarding are wired-but-empty until those flows are built.)
+function _approvalInbox(){
+  const items=[];
+  // (a) LEAVE — same gate the leave manager/HR tabs use (_canActOn, plus stranded for HR/Admin).
+  const _canSeeStranded=isAdmin()||(can('leaveRequests','approve')&&!!me()?.hrm?.isHR);
+  (DB.leaveRequests||[]).forEach(r=>{
+    const pending=r.status==='Pending';
+    const actionable=_canActOn(r)||(_canSeeStranded&&_stageStranded(r)&&r.userId!==S.uid);
+    // Decided rows: surface the ones this user decided (mgr/hr decision recorded) or, for
+    // elevated users, the ones in their scope — keep it conservative: only show decided
+    // leave the actor could have acted on (same predicate, status relaxed).
+    if(pending){if(!actionable)return;}
+    else{ if(!(isAdmin()||((can('leaveRequests','approve'))&&me()?.hrm?.isHR)||(r.mgrAt&&_stageApprover(r,0)(S.uid)) ))return; }
+    const emp=uById(r.userId);const lt=ltById(r.leaveTypeId);
+    items.push({
+      id:'lv-'+r.id, type:'leave', requestedBy:r.userId, assignedTo:null,
+      subject:(lt?lt.name:'Leave')+' · '+fmtD(r.start)+'→'+fmtD(r.end)+' ('+r.workingDays+'d)',
+      payload:r, status:r.status, decidedBy:null,
+      decidedAt:(r.hrAt||r.mgrAt||null),
+      location:emp?.location||'', dept:emp?.department||'',
+      _src:{coll:'leaveRequests',id:r.id}
+    });
+  });
+  // (b) SUBMISSION + EDIT approvals — same scope as approvalsPage (3661): admin sees all,
+  //     others see their subTree + own.
+  const _apprScope=isAdmin()?(DB.approvals||[]):(DB.approvals||[]).filter(a=>subTree(S.uid).some(u=>u.id===a.requesterId)||a.requesterId===S.uid);
+  _apprScope.forEach(a=>{
+    const u=uById(a.requesterId);if(!u)return;
+    const c=clById(a.checklistId);
+    const isEdit=a.type==='Edit Request';
+    // Normalise the native statuses: 'Used' (resubmitted edit) reads as Approved for filtering.
+    const st=a.status==='Used'?'Approved':a.status;
+    items.push({
+      id:'ap-'+a.id, type:isEdit?'edit':'submission', requestedBy:a.requesterId, assignedTo:u.managerId||null,
+      subject:(c?.name||'Checklist')+(a.date?' · '+fmtD(a.date):''),
+      payload:a, status:st, decidedBy:null, decidedAt:null,
+      location:u.location||'', dept:u.department||'',
+      _src:{coll:'approvals',id:a.id}
+    });
+  });
+  // (c) DOCUMENT approvals — only flagged org docs (approvalStatus set) enter the inbox. Pending
+  //     rows are visible to org-doc approvers (not the uploader); decided rows surface to the same
+  //     pool plus the uploader (read-only). Legacy docs (approvalStatus null) never appear.
+  const _canApprDoc=can('documentsOrg','approve');
+  (DB.documents||[]).forEach(d=>{
+    if(!d.approvalStatus)return; // legacy / no-approval docs
+    const up=uById(d.uploadedBy);
+    const st=d.approvalStatus==='approved'?'Approved':d.approvalStatus==='rejected'?'Rejected':'Pending';
+    const isApprover=_canApprDoc&&d.uploadedBy!==S.uid;
+    if(st==='Pending'){if(!isApprover)return;}            // pending → approvers only
+    else{if(!isApprover&&d.uploadedBy!==S.uid)return;}     // decided → approver pool + the uploader
+    items.push({
+      id:'doc-'+d.id, type:'document', requestedBy:d.uploadedBy, assignedTo:d.approverId||null,
+      subject:d.name+' · '+(up?fullName(up):(d.uploaderName||'Unknown')),
+      payload:{...d,createdAt:d.uploadedAt}, status:st,
+      decidedBy:d.decidedBy||null, decidedAt:d.decidedAt||null,
+      location:up?.hrm?.locationId||'', dept:up?.department||'',
+      _src:{coll:'documents',id:d.id}
+    });
+  });
+  // (d) ONBOARDING approvals — only requiresApproval steps that have been SUBMITTED (or decided) enter
+  //     the inbox. Pending-submission steps are visible to approvers in scope (HR/Admin all; a plain
+  //     manager-approver only their subtree), never to the hire. Decided rows surface to the same pool.
+  const _canApprOb=can('onboarding','approve');
+  (DB.onboardingInstances||[]).forEach(inst=>{
+    const hire=uById(inst.userId);if(!hire)return;
+    (inst.steps||[]).forEach(step=>{
+      if(!step.requiresApproval)return;
+      if(step.status!=='submitted'&&step.status!=='approved'&&step.status!=='rejected')return;
+      const st=step.status==='submitted'?'Pending':step.status==='approved'?'Approved':'Rejected';
+      const inScope=isAdmin()||isHR()||scopeFilter('onboarding')(inst.userId);
+      const isApprover=_canApprOb&&inst.userId!==S.uid&&inScope;
+      if(!isApprover)return; // hire / out-of-scope users never see onboarding approval rows
+      items.push({
+        id:'ob-'+inst.id+'-'+step.id, type:'onboarding', requestedBy:inst.userId, assignedTo:null,
+        subject:fullName(hire)+' — onboarding: '+step.title,
+        payload:{...step,instId:inst.id,createdAt:inst.createdAt}, status:st,
+        decidedBy:step.decidedBy||null, decidedAt:step.decidedAt||null,
+        location:hire.hrm?.locationId||'', dept:hire.department||'',
+        _src:{coll:'onboarding_instances',id:inst.id,stepId:step.id}
+      });
+    });
+  });
+  return items;
+}
+// Single number for the nav badge: every pending decision actionable by this user, all types.
+function _approvalPendingCount(){return _approvalInbox().filter(x=>x.status==='Pending').length;}
+// Which types currently have ANY item for this user (drives which filter chips render).
+function _approvalTypes(){const s=new Set(_approvalInbox().map(x=>x.type));return s;}
+
+// B1: resolve the DISPLAY NAMES of the active users who can approve stage `i` of `req` (reuses the
+//   same _stageApprover predicate so the names can never drift from who can actually act). Excludes the
+//   requester and inactive/Super-Admin users; returns a short, human label like "Priya" / "HR team".
+function _stageApproverNames(req,i){
+  const f=_reqFlow(req);const stage=f[i]||null;if(!stage)return '';
+  if(stage.type==='user'){const u=uById(stage.userId);return u?fullName(u):'(unassigned)';}
+  const pred=_stageApprover(req,i);
+  const names=(DB.users||[]).filter(x=>x.status==='Active'&&x.role!=='Admin'&&x.id!==req.userId&&pred(x.id)).map(fullName);
+  if(!names.length)return stage.type==='role'?'HR team':'(no approver)';
+  if(names.length<=2)return names.join(' or ');
+  return names.slice(0,2).join(', ')+' +'+(names.length-2)+' more';
+}
+// B1: compact approval-progress strip shown to the APPLICANT on their own leave card. Walks the request's
+//   snapshot flow and classifies each stage as done / current / upcoming / rejected, naming the approver(s).
+function _leaveChainView(r){
+  const flow=_reqFlow(r);if(!Array.isArray(flow)||!flow.length)return '';
+  const curIdx=(r.stageIndex!=null?r.stageIndex:0);
+  const rejected=r.status==='Rejected', approved=r.status==='Approved';
+  const rows=flow.map((stage,i)=>{
+    const label=_stageLabel(stage)||'Stage';
+    let state,icon,col,note='';
+    if(rejected&&i===curIdx){state='rejected';icon='✕';col='#DC2626';}
+    else if(approved||i<curIdx){state='done';icon='✓';col='#059669';}
+    else if(i===curIdx&&r.status==='Pending'){state='current';icon='●';col='#D97706';}
+    else{state='upcoming';icon='○';col='#9CA3AF';}
+    // Per-stage note (manager note on the manager-type stage, HR note otherwise) for done/rejected stages.
+    const sNote=(stage.type==='manager')?r.mgrNote:r.hrNote;
+    if((state==='done'||state==='rejected')&&sNote)note=`<div style="font-size:11px;color:#6B7280;margin-top:1px">“${esc(sNote)}”</div>`;
+    const names=_stageApproverNames(r,i);
+    const suffix=state==='current'?` — pending on ${esc(names)}`
+      :state==='upcoming'?` — upcoming${r.needsAdmin&&i===curIdx?'':''}`
+      :state==='rejected'?` — rejected`
+      :` — approved`;
+    return `<div style="display:flex;gap:8px;align-items:flex-start;padding:3px 0">
+      <span style="color:${col};font-weight:800;line-height:1.5;flex-shrink:0">${icon}</span>
+      <div style="min-width:0"><span style="font-size:12px;font-weight:700;color:#374151">Stage ${i+1} · ${esc(label)}${names&&state!=='current'?` (${esc(names)})`:''}</span><span style="font-size:12px;color:${col};font-weight:600">${suffix}</span>${note}</div>
+    </div>`;
+  }).join('');
+  // Escalation banner: a pending request with no resolvable approver was routed to HR/Admins.
+  const escal=(r.status==='Pending'&&r.needsAdmin)?`<div style="font-size:11px;font-weight:700;color:#B45309;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:5px 8px;margin-top:6px">⚠ Escalated to HR / Admin — no designated approver for this stage.</div>`:'';
+  // Final summary line.
+  let fin='';
+  if(approved){const last=flow[flow.length-1];const who=_stageApproverNames(r,flow.length-1);const at=r.hrAt||r.mgrAt;
+    fin=`<div style="font-size:11px;font-weight:700;color:#059669;margin-top:6px">✓ Approved${who?(' by '+esc(who)):''}${at?(' on '+fmtD(at.slice(0,10))):''}</div>`;}
+  else if(rejected){const who=_stageApproverNames(r,curIdx);const at=r.hrAt||r.mgrAt;
+    fin=`<div style="font-size:11px;font-weight:700;color:#DC2626;margin-top:6px">✕ Rejected${who?(' by '+esc(who)):''}${at?(' on '+fmtD(at.slice(0,10))):''}</div>`;}
+  return `<div style="margin-top:8px;border-top:1px solid #F3F4F6;padding-top:8px">${rows}${escal}${fin}</div>`;
+}
 
 function _myLeaveView(){
   const u=me();const prof=userProfileId(u);
@@ -7053,8 +7864,7 @@ function _myLeaveView(){
     return `<div style="background:#fff;border-radius:14px;border:1px solid #ECEDF0;padding:14px;margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;align-items:start;gap:8px"><div><div style="font-size:14px;font-weight:700">${esc(lt?lt.name:'Leave')}${r.halfDay?' <span style="font-size:11px;color:#F59E0B">(half-day)</span>':''}</div><div style="font-size:12px;color:#6B7280;margin-top:2px">${fmtD(r.start)} → ${fmtD(r.end)} · ${r.workingDays} day${r.workingDays===1?'':'s'}</div></div><span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;background:${stColor}22;color:${stColor}">${r.status==='Pending'?('Pending — '+(r.stage==='manager'?'Manager':'HR')):r.status}</span></div>
       ${r.reason?`<div style="font-size:12px;color:#6B7280;margin-top:6px">${esc(r.reason)}</div>`:''}
-      ${r.mgrNote?`<div style="font-size:12px;color:#6B7280;margin-top:4px"><strong>Manager:</strong> ${esc(r.mgrNote)}</div>`:''}
-      ${r.hrNote?`<div style="font-size:12px;color:#6B7280;margin-top:4px"><strong>HR:</strong> ${esc(r.hrNote)}</div>`:''}
+      ${_leaveChainView(r)}
       ${r.status==='Pending'?`<button onclick="App.cancelLeave('${r.id}')" style="margin-top:8px;font-size:12px;font-weight:600;color:#B91C1C;background:none;border:none;cursor:pointer;padding:0">Cancel request</button>`:''}
     </div>`;}).join(''):empty('approve','No leave requests','Apply for leave to get started.');
   return `<div style="margin-bottom:6px;font-size:11px;font-weight:800;color:#9CA3AF;text-transform:uppercase;letter-spacing:.06em">Balances · ${yr}</div>
@@ -7164,7 +7974,8 @@ App.submitLeave=()=>{
   saveDB();closeModal();toast('Leave request submitted ✓');
   // notify the first stage's approver(s) resolved via _stageApprover (gated by §4 in-app toggle)
   if(_hnp('inapp_hrm_leave_submitted'))directApprovers.forEach(a=>_hrmNotify(a.id,'📝 '+fullName(u)+' requested '+lt.name+' ('+fmtD(start)+'→'+fmtD(end)+') — your approval needed','leave'));
-  if(_hnpEmail('email_hrm_leave_submitted'))queueEmail('hrm_leave_submitted',u.id,null,start,{type:lt.name});
+  // C3: email the APPROVER(s) (not the requester) with the full structured leave detail.
+  if(_hnpEmail('email_hrm_leave_submitted'))directApprovers.forEach(a=>queueEmail('hrm_leave_submitted',a.id,null,start,{approver_name:fullName(a),user_name:fullName(u),leave_type:lt.name,start_date:fmtD(start),end_date:fmtD(end),working_days:wd+(wd===1?' day':' days')+(halfDay?' (half-day)':''),reason:reason||'—'}));
   rr();
 };
 App.cancelLeave=(id)=>{
@@ -7237,7 +8048,8 @@ App.decideLeave=(id,action,expectedStageIndex)=>{
     }else{r.needsAdmin=false;}
     // next-stage approvers = same "approval needed" event as submission (gated by §4)
     if(_hnp('inapp_hrm_leave_submitted'))nextApprovers.forEach(a=>_hrmNotify(a.id,'📝 '+fullName(emp)+'\'s '+(lt?lt.name:'leave')+' needs your approval (stage '+(si+2)+')','leave'));
-    if(_hnpEmail('email_hrm_leave_submitted'))queueEmail('hrm_leave_submitted',emp.id,null,r.start,{type:lt?lt.name:''});
+    // C3: email the NEXT-stage approver(s) with structured detail (mirrors submit-stage email).
+    if(_hnpEmail('email_hrm_leave_submitted'))nextApprovers.forEach(a=>queueEmail('hrm_leave_submitted',a.id,null,r.start,{approver_name:fullName(a),user_name:fullName(emp),leave_type:lt?lt.name:'leave',start_date:fmtD(r.start),end_date:fmtD(r.end),working_days:r.workingDays+(r.workingDays===1?' day':' days'),reason:r.reason||'—'}));
     _hrmNotify(emp.id,'✓ Your '+(lt?lt.name:'leave')+' passed '+_stageLabel(curStage)+' — pending '+_stageLabel(nextStage)+'.','leave'); // progress note (informational)
   }else{
     r.stage='done';r.status='Approved';
@@ -7248,7 +8060,8 @@ App.decideLeave=(id,action,expectedStageIndex)=>{
     _writeLeaveAttendance(r); // mark attendance Leave/HalfDay (history written for unpaid too)
     hlog('Leave approved',fullName(emp)+': '+(lt?lt.name:''));
     if(_hnp('inapp_hrm_leave_approved'))_hrmNotify(emp.id,'✅ Your '+(lt?lt.name:'leave')+' ('+fmtD(r.start)+'→'+fmtD(r.end)+') was approved.','leave');
-    if(_hnpEmail('email_hrm_leave_approved'))queueEmail('hrm_leave_approved',emp.id,null,r.start,{type:lt?lt.name:''});
+    // C3: email the employee with structured detail incl. approver + remaining balance.
+    if(_hnpEmail('email_hrm_leave_approved')){const _bal=r.unpaid?'—':(_balRemaining(_balanceReadonly(emp.id,r.leaveTypeId,r.leaveYear||_leaveYearOf(emp,r.start)))+' day(s)');queueEmail('hrm_leave_approved',emp.id,null,r.start,{user_name:fullName(emp),leave_type:lt?lt.name:'leave',start_date:fmtD(r.start),end_date:fmtD(r.end),working_days:r.workingDays+(r.workingDays===1?' day':' days'),approver_name:fullName(me()),balance:_bal});}
   }
   saveDB();toast('Approved ✓');rr();
 };
@@ -7274,7 +8087,8 @@ App._doReject=(id,expectedStageIndex)=>{
     b.pending=_r2(Math.max(0,(b.pending||0)-r.workingDays));} // release reservation (skip for unpaid)
   hlog('Leave rejected',fullName(emp)+': '+(lt?lt.name:'')+(note?(' — '+note):''));
   if(_hnp('inapp_hrm_leave_rejected'))_hrmNotify(emp.id,'❌ Your '+(lt?lt.name:'leave')+' was rejected'+(note?': '+note:'.'),'leave');
-  if(_hnpEmail('email_hrm_leave_rejected'))queueEmail('hrm_leave_rejected',emp.id,null,r.start,{type:lt?lt.name:'',note});
+  // C3: email the employee with structured detail incl. approver + rejection reason.
+  if(_hnpEmail('email_hrm_leave_rejected'))queueEmail('hrm_leave_rejected',emp.id,null,r.start,{user_name:fullName(emp),leave_type:lt?lt.name:'leave',start_date:fmtD(r.start),end_date:fmtD(r.end),approver_name:fullName(me()),reason:note||'No reason provided'});
   saveDB();closeModal();toast('Rejected');rr();
 };
 function _writeLeaveAttendance(r){
@@ -7402,13 +8216,22 @@ function _balScopeUsers(){
   if(f.cfgBalQ){const q=f.cfgBalQ.toLowerCase();list=list.filter(u=>fullName(u).toLowerCase().includes(q)||(u.department||'').toLowerCase().includes(q));}
   return list.sort((a,b)=>fullName(a).localeCompare(fullName(b)));
 }
+// A3 (cause 1): the bulk-balance filter bar's change/search handlers call rr(), which re-renders the
+//   table from DB and would WIPE any un-flushed inline cell edits. Flush first so manual edits survive
+//   a dept/location/company/search filter change. Saves locally (saveDB) + targeted server push.
+App._bulkBalFlushBeforeFilter=()=>{
+  if(!document.querySelector('.bulkbal-cell'))return; // only the bulkbal editor has cells
+  const n=_bulkBalFlush();
+  if(n){saveDB();_bulkBalTargetedSave();toast('Saved '+n+' balance change(s) ✓');}
+};
 function _balFilterBar(prefix){
   const f=S.filters;
+  const fl=prefix==='bulkbal'?'App._bulkBalFlushBeforeFilter();':'';
   return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-    <div style="position:relative;flex:1;min-width:180px"><span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#9CA3AF">${ic('search','w-4 h-4')}</span><input id="${prefix}-search" value="${esc(f.cfgBalQ||'')}" oninput="S.filters.cfgBalQ=this.value;App._searchRR('${prefix}-search')" placeholder="Search employees…" style="width:100%;padding:9px 12px 9px 34px;border:1.5px solid #ECEDF0;border-radius:11px;font-size:13px"/></div>
-    <select onchange="S.filters.cfgBalDept=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All departments</option>${DB.departments.map(d=>`<option${f.cfgBalDept===d.name?' selected':''}>${esc(d.name)}</option>`).join('')}</select>
-    <select onchange="S.filters.cfgBalLoc=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All locations</option>${DB.locations.map(l=>`<option value="${l.id}"${f.cfgBalLoc===l.id?' selected':''}>${esc(l.name)}</option>`).join('')}</select>
-    <select onchange="S.filters.cfgBalProf=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All companies/profiles</option>${Object.keys(DB.hrmConfig.profiles||{}).map(k=>`<option value="${k}"${f.cfgBalProf===k?' selected':''}>${esc(DB.hrmConfig.profiles[k].label||k)}</option>`).join('')}</select>
+    <div style="position:relative;flex:1;min-width:180px"><span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#9CA3AF">${ic('search','w-4 h-4')}</span><input id="${prefix}-search" value="${esc(f.cfgBalQ||'')}" onchange="${fl}" oninput="S.filters.cfgBalQ=this.value;App._searchRR('${prefix}-search')" placeholder="Search employees…" style="width:100%;padding:9px 12px 9px 34px;border:1.5px solid #ECEDF0;border-radius:11px;font-size:13px"/></div>
+    <select onchange="${fl}S.filters.cfgBalDept=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All departments</option>${DB.departments.map(d=>`<option${f.cfgBalDept===d.name?' selected':''}>${esc(d.name)}</option>`).join('')}</select>
+    <select onchange="${fl}S.filters.cfgBalLoc=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All locations</option>${DB.locations.map(l=>`<option value="${l.id}"${f.cfgBalLoc===l.id?' selected':''}>${esc(l.name)}</option>`).join('')}</select>
+    <select onchange="${fl}S.filters.cfgBalProf=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All companies/profiles</option>${Object.keys(DB.hrmConfig.profiles||{}).map(k=>`<option value="${k}"${f.cfgBalProf===k?' selected':''}>${esc(DB.hrmConfig.profiles[k].label||k)}</option>`).join('')}</select>
   </div>`;
 }
 function _bulkBalanceEditor(){
@@ -7446,6 +8269,10 @@ function _bulkBalanceEditor(){
   </div>`;
 }
 App._bulkBalSelectAll=(on)=>{$$('.bulkbal-sel').forEach(cb=>{cb.checked=on;});};
+// A3: rows changed by the last flush/adjust, for the targeted server save (cause 4: don't rely on the
+//   debounced full-array _sync, which fails SILENTLY under RLS for non-_is_elevated() editors).
+let _bulkBalDirty=[];
+function _bulkBalMarkDirty(b){if(b&&!_bulkBalDirty.includes(b))_bulkBalDirty.push(b);}
 // Flush every visible .bulkbal-cell input into DB.leaveBalances. Returns the number of changed cells.
 // Shared by "Save all" and by "Apply to selected" (UI-2) so manual edits are never silently dropped.
 function _bulkBalFlush(){
@@ -7454,15 +8281,25 @@ function _bulkBalFlush(){
     const uId=inp.dataset.uid,ltId=inp.dataset.lt,yr=inp.dataset.yr;
     const v=Number(inp.value);if(isNaN(v))return;
     const b=_balanceFor(uId,ltId,yr);const old=b.entitled||0;
-    if(_r2(v)!==_r2(old)){b.entitled=_r2(Math.max(0,v));const u=uById(uId),lt=ltById(ltId);hlog('Balance edited '+(lt?lt.name:''),fullName(u)+': '+old+' → '+b.entitled+' entitled');n++;}
+    if(_r2(v)!==_r2(old)){b.entitled=_r2(Math.max(0,v));_bulkBalMarkDirty(b);const u=uById(uId),lt=ltById(ltId);hlog('Balance edited '+(lt?lt.name:''),fullName(u)+': '+old+' → '+b.entitled+' entitled');n++;}
   });
   return n;
+}
+// A3 (cause 4): targeted upsert of only the changed leave_balances rows. Surfaces an RLS/connection
+//   failure via toast so a non-elevated editor sees "Couldn't save" instead of a false "Saved ✓"
+//   (the change would otherwise vanish on reload). Mirrors the targeted savers at 3201/3738.
+function _bulkBalTargetedSave(){
+  const rows=_bulkBalDirty.slice();_bulkBalDirty=[];
+  if(!rows.length)return;
+  sb.from('leave_balances').upsert(rows.map(b=>({id:b.id,user_id:b.userId,leave_type_id:b.leaveTypeId,leave_year:b.leaveYear,entitled:b.entitled||0,accrued:b.accrued||0,carried_in:b.carriedIn||0,carried_expiry:b.carriedExpiry||null,used:b.used||0,pending:b.pending||0,last_accrued_month:b.lastAccruedMonth||null})),{onConflict:'id'})
+    .then(({error})=>{if(error){console.warn('[bulk balance save]',error.message);toast("Couldn't save balances to the server — you may not have permission",'err');}})
+    .catch(e=>{console.warn('[bulk balance save]',e.message);toast("Couldn't save balances — check your connection",'err');});
 }
 App._bulkBalSaveAll=()=>{
   if(!can('leaveBalances','edit')){toast('Not permitted','err');return;}
   const n=_bulkBalFlush();
   if(!n){toast('No changes to save','warn');return;}
-  saveDB();toast('Saved '+n+' balance change(s) ✓');rr();
+  saveDB();_bulkBalTargetedSave();toast('Saved '+n+' balance change(s) ✓');rr();
 };
 App._bulkBalAdjust=(profId)=>{
   if(!can('leaveBalances','edit')){toast('Not permitted','err');return;}
@@ -7477,10 +8314,10 @@ App._bulkBalAdjust=(profId)=>{
   const flushed=_bulkBalFlush();
   sel.forEach(uId=>{
     const u=uById(uId);const yr=_leaveYearOf(u,todayISO());const b=_balanceFor(uId,ltId,yr);
-    b.entitled=_r2(Math.max(0,(b.entitled||0)+delta));
+    b.entitled=_r2(Math.max(0,(b.entitled||0)+delta));_bulkBalMarkDirty(b);
     hlog('Balance adjusted '+(delta>0?'+':'')+delta+' '+lt.name,fullName(u)+': '+reason);
   });
-  saveDB();toast('Adjusted '+sel.length+' employee(s)'+(flushed?' · saved '+flushed+' cell edit(s)':'')+' ✓');rr();
+  saveDB();_bulkBalTargetedSave();toast('Adjusted '+sel.length+' employee(s)'+(flushed?' · saved '+flushed+' cell edit(s)':'')+' ✓');rr();
 };
 
 /* ════════ §3a — COMP-OFF MANAGER (HR Config tab, gated by leaveBalances.grant) ════════
@@ -7611,7 +8448,7 @@ function accessControlPage(){
 // Working copy for the editor modal (avoids mutating DB.roleProfiles until Save).
 let _RP=null;
 App.editRoleProfile=(id=null)=>{
-  if(!isAdmin())return;
+  if(!isAdmin()){toast('Not permitted','err');return;}
   _seedRoleProfiles();
   const existing=id?DB.roleProfiles[id]:null;
   // Build a deep-cloned working set.
@@ -7635,8 +8472,9 @@ App.editRoleProfile=(id=null)=>{
   App._rpSummary();
 };
 // Render the grouped, data-driven editor by iterating PERM_AREAS (so new areas appear automatically).
+// Areas are partitioned under their `group` with a section header for usability.
 function _rpAreasHTML(){
-  return PERM_AREAS.filter(a=>a.key!=='accessControl').map(a=>{
+  const card=a=>{
     const cur=_RP.perms[a.key]||{scope:a.scoped?'self':'none',actions:{}};
     const scopeSel=a.scoped?`<div style="max-width:220px;margin-top:6px">${selF('Visible scope','rp-scope-'+a.key,SCOPE_ORDER.map(s=>[s,SCOPE_LABEL[s]]),cur.scope||'self')}</div>`:'';
     const togs=a.actions.map(act=>mkTog('rp-act-'+a.key+'-'+act,!!(cur.actions&&cur.actions[act]),PERM_ACTION_LABEL[act]||act)).join('');
@@ -7646,6 +8484,15 @@ function _rpAreasHTML(){
       ${scopeSel}
       <div style="margin-top:6px">${togs}</div>
     </div>`;
+  };
+  const editable=PERM_AREAS.filter(a=>a.key!=='accessControl');
+  // Preserve PERM_GROUPS order, then any areas with an unrecognised/missing group.
+  const groups=[...PERM_GROUPS,...[...new Set(editable.map(a=>a.group).filter(g=>g&&!PERM_GROUPS.includes(g)))]];
+  return groups.map(g=>{
+    const areas=editable.filter(a=>(a.group||'System')===g);
+    if(!areas.length)return '';
+    return `<div style="margin-top:4px"><div style="font-size:11px;font-weight:800;color:#9CA3AF;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">${esc(g)}</div>
+      <div style="display:flex;flex-direction:column;gap:10px">${areas.map(card).join('')}</div></div>`;
   }).join('');
 }
 // Reads the LIVE DOM toggles/scopes → rebuilds the summary line. Bound to onclick/onchange via event delegation.
@@ -7687,17 +8534,24 @@ App.saveRoleProfile=()=>{
   const id=_RP.id||uid('rprof');
   const prev=DB.roleProfiles[id];
   DB.roleProfiles[id]={id,name,description:desc,builtin:prev?!!prev.builtin:false,perms};
-  saveDB();closeModal();toast('Role profile saved ✓');_RP=null;rr();
+  saveDB();_syncRoleProfiles();closeModal();toast('Role profile saved ✓');_RP=null;rr();
 };
+// B2b: targeted role-profile push (don't wait for the debounced _sync) so edits reach the shared
+//   workspace_settings row immediately. Admin-only — matches the _sync write guard + RLS write-elevated.
+function _syncRoleProfiles(){
+  if(!isAdmin()||!sb||!DB.roleProfiles)return;
+  sb.from('workspace_settings').upsert({key:'role_profiles',value:DB.roleProfiles,updated_at:new Date().toISOString()},{onConflict:'key'})
+    .then(({error})=>{if(error)toast('Couldn\'t sync role profiles to server','err');}).catch(()=>toast('Couldn\'t sync role profiles to server','err'));
+}
 App.duplicateRoleProfile=(id)=>{
-  if(!isAdmin())return;
+  if(!isAdmin()){toast('Not permitted','err');return;}
   const src=DB.roleProfiles[id];if(!src)return;
   const nid=uid('rprof');
   DB.roleProfiles[nid]={id:nid,name:src.name+' (copy)',description:src.description||'',builtin:false,perms:JSON.parse(JSON.stringify(src.perms||{}))};
-  saveDB();toast('Profile duplicated ✓');rr();
+  saveDB();_syncRoleProfiles();toast('Profile duplicated ✓');rr();
 };
 App.deleteRoleProfile=(id)=>{
-  if(!isAdmin())return;
+  if(!isAdmin()){toast('Not permitted','err');return;}
   const p=DB.roleProfiles[id];if(!p)return;
   if(p.builtin){toast('Built-in profiles cannot be deleted','err');return;}
   const n=DB.users.filter(u=>u.hrm?.roleProfileId===id).length;
@@ -7705,7 +8559,7 @@ App.deleteRoleProfile=(id)=>{
   // Null out assignment so affected users fall back to the base-role floor.
   DB.users.forEach(u=>{if(u.hrm&&u.hrm.roleProfileId===id)u.hrm.roleProfileId=null;});
   delete DB.roleProfiles[id];
-  saveDB();toast('Profile deleted');rr();
+  saveDB();_syncRoleProfiles();toast('Profile deleted');rr();
 };
 
 // §3: App.useMyLocation removed — the profile-level geofence card no longer exists (geofence lives on Locations,
@@ -7754,7 +8608,8 @@ App.saveLeaveType=(id)=>{
 // §3a: comp-off grant/remove → appends to the dedicated u.hrm.compOff ledger (frontend-only).
 //   Positive days = grant (honors its own expiry); negative = removal. Independent of carriedExpiry.
 App.addCompOff=(userId)=>{
-  const u=uById(userId);if(!u||!can('leaveBalances','grant'))return;
+  const u=uById(userId);if(!u)return;
+  if(!can('leaveBalances','grant')){toast('Not permitted','err');return;}
   _grantCompOff(u,Number($('#u-co-days')?.value),($('#u-co-reason')?.value||'').trim(),$('#u-co-exp')?.value||null);
 };
 function _grantCompOff(u,days,reason,exp){
@@ -7768,6 +8623,9 @@ function _grantCompOff(u,days,reason,exp){
   _ensureHrm(u);
   u.hrm.compOff.push({id:uid('co'),days:_r2(days),reason,expiry:(days>0?(exp||null):null),at:new Date().toISOString(),by:fullName(me())});
   hlog('Comp-off '+(days>0?'+':'')+days,fullName(u)+': '+reason);
+  // C3: notify the employee of their balance change; email only on a grant (positive event), gated by the HR master switch.
+  if(u.id!==S.uid)_hrmNotify(u.id,(days>0?'🎁 You were granted ':'➖ ')+Math.abs(days)+' comp-off day(s)'+(reason?(': '+reason):'.'),'leave');
+  if(days>0&&_hnp('hrm_email_enabled'))queueEmail('hrm_comp_off',u.id,null,null,{user_name:fullName(u),days:_r2(days)+' day(s)',reason:reason||'—',expiry:exp?fmtD(exp):'No expiry',approver_name:fullName(me())});
   saveDB();toast((days>0?'Granted ':'Removed ')+Math.abs(days)+' comp-off day(s) ✓');
   rr();
   return true;
