@@ -55,7 +55,7 @@ body{font-family:"Hanken Grotesk",sans-serif;font-size:14px;line-height:1.5;back
 
 /* ════════ Component primitives (token-driven) ════════ */
 /* Buttons */
-.ui-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;font-family:"Hanken Grotesk",sans-serif;font-weight:600;font-size:14px;line-height:1;border-radius:var(--r-md);border:1.5px solid transparent;cursor:pointer;transition:background .15s,border-color .15s,box-shadow .15s,opacity .15s,transform .1s;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+.ui-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;font-family:"Hanken Grotesk",sans-serif;font-weight:600;font-size:14px;line-height:1;padding:10px 17px;min-height:42px;border-radius:var(--r-md);border:1.5px solid transparent;cursor:pointer;transition:background .15s,border-color .15s,box-shadow .15s,opacity .15s,transform .1s;white-space:nowrap;-webkit-tap-highlight-color:transparent}
 .ui-btn:active{transform:translateY(1px) scale(.985)}
 .ui-btn:focus-visible{outline:none;box-shadow:var(--ring)}
 .ui-btn-md{padding:10px 17px;min-height:42px}
@@ -7486,6 +7486,10 @@ function _hrmInit(){
 /* ── Attendance status colors ── */
 const ATT_COLOR={Present:'#10B981',Absent:'#F43F5E',Leave:'#8B5CF6',HalfDay:'#F59E0B',OffDay:'#9CA3AF',Holiday:'#0EA5E9',AutoClosed:'#EAB308',LeavePending:'#FBBF24'};
 const ATT_LABEL={Present:'Present',Absent:'Absent',Leave:'On leave',HalfDay:'Half-day',OffDay:'Off-day',Holiday:'Public holiday',AutoClosed:'Auto-closed',LeavePending:'Leave (pending)'};
+// Soft tint + readable ink per status — gives the attendance calendar a calm heatmap look
+// instead of a wall of saturated colour. Present stays solid (it's the positive signal).
+const ATT_SOFT={Present:'#10B981',Absent:'#FDECEC',Leave:'#F1ECFE',HalfDay:'#FEF4E5',OffDay:'#F1F3F6',Holiday:'#E7F5FC',AutoClosed:'#FEF8E6',LeavePending:'#FEF6E0'};
+const ATT_INK={Present:'#FFFFFF',Absent:'#C1362B',Leave:'#5B2DBE',HalfDay:'#92560A',OffDay:'#7A8395',Holiday:'#075985',AutoClosed:'#866207',LeavePending:'#946112'};
 function _m2hm(m){if(m==null)return'—';m=((m%1440)+1440)%1440;return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');}
 
 /* Compute the display status for a user on a date (no record = derive off/holiday/absent/leave) */
@@ -7675,11 +7679,11 @@ function _attCalendar(userId,ym){
   for(let d=1;d<=days;d++){
     const date=ym+'-'+String(d).padStart(2,'0');
     const st=_dayStatus(userId,date);
-    const col=st?ATT_COLOR[st.status]:'#F3F4F6';
-    const txt=st&&st.status!=='Present'?'#fff':(st?'#fff':'#9CA3AF');
+    const bg=st?(ATT_SOFT[st.status]||'#F6F7F8'):'#F8F9FB';
+    const txt=st?(ATT_INK[st.status]||'#7A8395'):'#B6BDC9';
     const isT=date===todayISO();
     const tip=st?(ATT_LABEL[st.status]+(st.note?' — '+st.note:'')+(st.hours?(' ('+st.hours+'h)'):'')):'';
-    cells+=`<div onclick="App._attDay('${userId}','${date}')" title="${esc(tip)}" style="aspect-ratio:1;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;cursor:pointer;background:${st?col:'#F6F7F8'};color:${st?'#fff':'#9CA3AF'};border:${isT?'2px solid #15171C':'1px solid transparent'}">${d}</div>`;
+    cells+=`<div onclick="App._attDay('${userId}','${date}')" title="${esc(tip)}" style="aspect-ratio:1;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700;cursor:pointer;background:${bg};color:${txt};border:${isT?'2px solid var(--c-ink)':'1px solid transparent'};transition:transform .1s" onmouseover="this.style.transform='scale(1.08)'" onmouseout="this.style.transform='none'">${d}</div>`;
   }
   const monName=first.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
   const prevYm=_ymShift(ym,-1),nextYm=_ymShift(ym,1);
