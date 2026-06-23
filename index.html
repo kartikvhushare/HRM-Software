@@ -352,13 +352,11 @@ button:focus-visible{outline:none;box-shadow:var(--ring);border-radius:8px}
 .org-tree li.org-parent>.org-children::before{content:'';position:absolute;top:0;left:50%;width:2px;height:20px;background:#E2E4EA}
 .org-card{position:relative;z-index:1}
 .org-scroll{overflow:auto;-webkit-overflow-scrolling:touch}
-/* Reports: print only the report body (hide nav/topbar/buttons). */
+/* Print: hide nav/topbar so only the page body prints. */
 @media print{
   .sidebar,.topbar,.mobnav,.mob-nav,#bottom-nav{display:none!important}
   #main-wrap{margin-left:0!important}
   #content{padding:0!important;max-width:none!important}
-  .rp-print [onclick*="window.print"],.rp-print [onclick*="_rpExport"]{display:none!important}
-  .rp-print table{font-size:11px}
   @page{margin:14mm}
 }
 </style>
@@ -518,6 +516,7 @@ const _fileIcon=(ext,cls='w-5 h-5')=>{ext=(ext||'').toLowerCase();const n=ext===
 /* ===== SUPABASE CLIENT ===== */
 const SB_URL='https://bxuhmyxfzoqvmukausjd.supabase.co';
 const SB_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4dWhteXhmem9xdm11a2F1c2pkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkxODgxMTgsImV4cCI6MjA5NDc2NDExOH0._-WHdcw2p1LR09imPkfGx7F7VfqwHJHkcW6b0hSD00k';
+if(typeof supabase==='undefined'){var _a=document.getElementById('app');if(_a)_a.innerHTML='<div style="max-width:640px;margin:56px auto;padding:28px;font:15px/1.6 system-ui,-apple-system,sans-serif;color:#1f232b;border:1px solid #e8eaee;border-radius:16px"><h2 style="margin:0 0 10px;font-size:20px">Open Shiftly in a web browser</h2><p style="margin:0 0 8px">This app loads Tailwind and Supabase from the internet, so it can\u2019t run inside a preview pane.</p><p style="margin:0">Save this file and open it directly in <b>Chrome</b> or <b>Safari</b> with an internet connection \u2014 it will load normally.</p></div>';throw new Error('Supabase library not loaded (offline or blocked CDN) \u2014 open in a real browser.');}
 const sb=supabase.createClient(SB_URL,SB_ANON,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}});
 function _unesc(s){if(!s)return s;return String(s).replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");}
 function _mU(r){return(r||[]).map(p=>({id:p.id,firstName:_unesc(p.first_name)||'',lastName:_unesc(p.last_name)||'',email:p.email||'',phone:_unesc(p.phone)||'',position:_unesc(p.position)||'',department:_unesc(p.department)||'',role:p.role||'User',status:p.status||'Active',managerId:p.manager_id||null,managerHistory:p.manager_history||[],rules:p.rules||{past:true,future:true,edit:true},approval:p.approval_settings||{past:false,future:false,edited:false},docAccess:p.doc_access||{departments:{},locations:{}},questionsAccess:p.questions_access||false,password:'***'}));}
@@ -954,23 +953,14 @@ async function _sync(){try{
     //   RLS write-elevated + M1 reference-table gating) so ordinary users never fire rejected upserts.
     //   READ happens for everyone in loadFromSB so each user's can() resolves against the latest profiles.
     ((isAdmin()&&DB.roleProfiles&&Object.keys(DB.roleProfiles).length)?sb.from('workspace_settings').upsert({key:'role_profiles',value:DB.roleProfiles,updated_at:new Date().toISOString()},{onConflict:'key'}):Promise.resolve()),
-    // SOPs: templates are HR/Admin-writable (RLS _is_hr) — gate on can('sops','manage') so ordinary
-    //   users don't fire rejected upserts (mirrors the role_profiles admin-gate). Instances: only push the rows
-    //   the caller may write under RLS (own assigned, or elevated/manager-of) so plain employees never get rejected.
-    ((can('sops','manage')&&DB.sopTemplates&&DB.sopTemplates.length)?sb.from('sop_templates').upsert(DB.sopTemplates.map(_otRow),{onConflict:'id'}):Promise.resolve()),
-    (()=>{const rows=(DB.sopInstances||[]).filter(i=>i.userId===S.uid||isAdmin()||isHR()||scopeFilter('sops')(i.userId));return rows.length?sb.from('sop_instances').upsert(rows.map(_obRow),{onConflict:'id'}):Promise.resolve();})(),
     // Shifts: only managers/HR/Admin author the roster — gate WRITE on can('scheduling','manage') so ordinary
     //   employees never fire RLS-rejected upserts (mirrors the role_profiles/SOP admin-gate). Push only the rows
     //   the caller may write under RLS (scoped/elevated) so a manager-of-team never gets rejected for foreign rows.
     (()=>{if(!can('scheduling','manage'))return Promise.resolve();const f=scopeFilter('scheduling');const rows=(DB.shifts||[]).filter(s=>isAdmin()||isHR()||f(s.userId)||s.createdBy===S.uid);return rows.length?sb.from('shifts').upsert(rows.map(s=>({id:s.id,user_id:s.userId,date:s.date,start:s.start,end:s.end,location_id:s.locationId||null,note:s.note||'',status:s.status||'draft',published_at:s.publishedAt||null,created_by:s.createdBy||null,created_at:s.createdAt||new Date().toISOString()})),{onConflict:'id'}):Promise.resolve();})(),
-    // Expenses: per-user rows. Push only the claims the caller may write under RLS (own claim, or a
-    //   claim in their approval scope) so a plain employee never fires a rejected upsert for foreign rows
-    //   (mirrors the leave_requests per-user write + the SOP/shifts scoped-gate).
-    (()=>{const f=scopeFilter('employees');const rows=(DB.expenses||[]).filter(e=>e.userId===S.uid||isAdmin()||isHR()||(can('expenses','approve')&&f(e.userId)));return rows.length?sb.from('expenses').upsert(rows.map(e=>({id:e.id,user_id:e.userId,date:e.date,category:e.category||'Other',amount:e.amount||0,currency:e.currency||'USD',description:e.description||'',receipt_note:e.receiptNote||'',status:e.status||'pending',approver_id:e.approverId||null,decided_by:e.decidedBy||null,decided_at:e.decidedAt||null,decision_note:e.decisionNote||null,created_at:e.createdAt||new Date().toISOString()})),{onConflict:'id'}):Promise.resolve();})(),
   ]);
   // C1: surface persistence failures (RLS rejections / network) to the user, debounced. Labels MUST
   //   match the upsert order above. Resolved-Promise placeholders (gated/empty tables) report no error.
-  _reportSyncResults(results,['departments','locations','checklists','submissions','approvals','audit log','notifications','feedback','folders','documents','questions','tickets','HR config','leave types','holidays','leave requests','leave balances','attendance','employee HR data','role profiles','SOP templates','SOP instances','shifts','expenses']);
+  _reportSyncResults(results,['departments','locations','checklists','submissions','approvals','audit log','notifications','feedback','folders','documents','questions','tickets','HR config','leave types','holidays','leave requests','leave balances','attendance','employee HR data','role profiles','shifts']);
 }catch(e){console.warn('[Shiftly sync error]',e.message);}}
 
 /* ===== STATUS CHIPS ===== */
@@ -1191,10 +1181,8 @@ const PERM_AREAS=[
   {key:'hrSettings',label:'HR settings',desc:'Leave policy, types, holidays, approval flows',actions:['view','edit'],scoped:false,group:'Leave & Attendance'},
   {key:'employees',label:'Employees / Users',desc:'The people directory',actions:['view','create','edit','delete','deactivate','assignManager','assignRole','assign','manage'],scoped:true,group:'People & Org'},
   {key:'hierarchy',label:'Hierarchy / Org chart',desc:'The reporting tree',actions:['view'],scoped:true,group:'People & Org'},
-  {key:'sops',label:'SOPs',desc:'Standard Operating Procedures — library, authoring & assigned progress',actions:['view','manage','approve'],scoped:true,group:'People & Org'},
   {key:'scheduling',label:'Shift scheduling',desc:'Build the weekly roster, publish shifts; employees see their own',actions:['view','manage'],scoped:true,group:'People & Org'},
-  {key:'expenses',label:'Expense claims',desc:'Submit reimbursement claims; approvers act on the team\'s claims',actions:['view','submit','approve'],scoped:true,group:'People & Org'},
-  {key:'checklists',label:'Checklists & tasks',desc:'The task system',actions:['view','create','edit','assign','approve'],scoped:true,group:'Tasks & Tickets'},
+  {key:'checklists',label:'Checklists',desc:'The checklist system',actions:['view','create','edit','assign','approve'],scoped:true,group:'Tasks & Tickets'},
   {key:'questions',label:'Questions',desc:'The questions feature',actions:['view','manage'],scoped:false,group:'Tasks & Tickets'},
   {key:'tickets',label:'Tickets',desc:'Issue tickets',actions:['view','create','manage'],scoped:true,group:'Tasks & Tickets'},
   {key:'documentsOrg',label:'Documents (organization)',desc:'Shared dept/location files',actions:['view','create','delete','download','approve'],scoped:true,group:'Content'},
@@ -1518,7 +1506,7 @@ function _recoverEditingSubmissions(){
   });
 }
 /* ===== NAVIGATION ===== */
-const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['schedule','clock','Schedule'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['reports','audit','Reports'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
+const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['schedule','clock','Schedule'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
 const NAV_USR=[['dashboard','grid','Home'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['notifications','bell','Notifications']];
 const NAV_MGR=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['teamview','users','Team'],['users','user','My Users'],['checklists','list','Create Checklist'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics']];
 const MOB_ADM=['dashboard','mychecklists','attendance','notifications','more'];
@@ -1570,9 +1558,6 @@ const navFor=()=>{
     // hrmanalytics for managers, so the net change is HR + report-permitted users keep their tab and a
     // profile granting reports.view now surfaces it (deep-linkable == visible). isHR() ⊂ can('reports','view').
     if(can('reports','view')&&!base.find(n=>n[0]==='hrmanalytics'))base.push(['hrmanalytics','chart','HRM Analytics']);
-    // Reports & Exports: same gate as HRM Analytics (can('reports','view') = HR/Admin/managers/report-permitted).
-    // nav == router == permission. Plain employees (no reports.view) never see it.
-    if(can('reports','view')&&!base.find(n=>n[0]==='reports'))base.push(['reports','audit','Reports']);
   }
   // §10: Announcements tab for any user who can view announcements (base floor = everyone).
   if(can('announcements','view')&&!base.find(n=>n[0]==='announcements')){
@@ -1588,21 +1573,18 @@ const navFor=()=>{
     const after=base.findIndex(n=>n[0]==='users')>-1?base.findIndex(n=>n[0]==='users'):base.findIndex(n=>n[0]==='teamview');
     base.splice(after>-1?after+1:base.length,0,['hierarchy','tree','Hierarchy']);
   }
-  // SOPs tab removed from navigation per product decision (assignees still see their assigned-SOP
-  // card on the dashboard; the route remains reachable for any existing deep links).
   // Scheduling/Rostering: managers/HR who can BUILD the roster get the People-section "Schedule" tab
   //   (→ schedulePage). Everyone else who can view scheduling gets "My Schedule" in the daily strip
   //   (→ mySchedulePage, their own published shifts). nav == router == permission.
   if(!isAdmin()){
     if(can('scheduling','manage')&&!base.find(n=>n[0]==='schedule')){
-      const after=base.findIndex(n=>n[0]==='sops')>-1?base.findIndex(n=>n[0]==='sops'):base.findIndex(n=>n[0]==='users');
+      const after=base.findIndex(n=>n[0]==='users');
       base.splice(after>-1?after+1:base.length,0,['schedule','clock','Schedule']);
     }else if(can('scheduling','view')&&!base.find(n=>n[0]==='myschedule')){
       const after=base.findIndex(n=>n[0]==='attendance');
       base.splice(after>-1?after+1:base.length,0,['myschedule','clock','My Schedule']);
     }
   }
-  // Expenses tab removed from navigation per product decision (route remains reachable for deep links).
   return base;
 };
 /* ───── Grouped nav (presentation only) ─────
@@ -1615,9 +1597,9 @@ const NAV_SECTION_OF={
   // Work
   mychecklists:'__daily',checklists:'Work',allcl:'Work',questions:'Work',announcements:'Work',
   // People
-  users:'People',teamview:'People',hierarchy:'People',sops:'People',onboarding:'People',schedule:'People',
+  users:'People',teamview:'People',hierarchy:'People',schedule:'People',
   // Insights
-  analytics:'Insights',hrmanalytics:'Insights',reports:'Insights',
+  analytics:'Insights',hrmanalytics:'Insights',
   // Setup
   hrmconfig:'Setup',locations:'Setup',departments:'Setup',settings:'Setup',audit:'Setup',accesscontrol:'Setup',
 };
@@ -1637,7 +1619,11 @@ function navSectionsFor(){
   const ordered=[...NAV_SECTION_ORDER,'More'].filter(s=>sections[s]&&sections[s].length).map(s=>({label:s,icon:NAV_SECTION_ICON[s]||'grid',items:sections[s]}));
   return {daily,sections:ordered};
 }
-App.toggleNavSec=(name)=>{S._navCollapsed=S._navCollapsed||{};S._navCollapsed[name]=!S._navCollapsed[name];render();};
+App.toggleNavSec=(name,btn)=>{S._navCollapsed=S._navCollapsed||{};S._navCollapsed[name]=!S._navCollapsed[name];
+  // Toggle the section in-place (no full re-render) so the sidebar scroll position is preserved
+  // and the expand/collapse feels instant. Falls back to render() if the element isn't found.
+  const sec=btn&&btn.closest?btn.closest('.nav-sec'):null;
+  if(sec){sec.classList.toggle('collapsed',!!S._navCollapsed[name]);}else{render();}};
 App.go=(r)=>{S.route=r;S.search='';S.expandedCl=null;S.afOpen=null;
   // Preserve analytics filters; preserve questions sub-tab state; reset everything else
   if(r==='analytics'){/* keep filters */}
@@ -1646,7 +1632,6 @@ App.go=(r)=>{S.route=r;S.search='';S.expandedCl=null;S.afOpen=null;
   else if(r==='settings'){const stab=S.filters.stab;const tplKey=S.filters.tplKey;S.filters={};if(stab)S.filters.stab=stab;if(tplKey)S.filters.tplKey=tplKey;}
   else if(r==='attendance'||r==='leave'||r==='hrmconfig'||r==='hrmanalytics'){const htab=S.filters.htab;const cfgtab=S.filters.cfgtab;S.filters={};if(htab)S.filters.htab=htab;if(cfgtab)S.filters.cfgtab=cfgtab;}
   else if(r==='schedule'||r==='myschedule'){const schWk=S.filters.schWk,schDept=S.filters.schDept,schLoc=S.filters.schLoc;S.filters={};if(schWk!=null)S.filters.schWk=schWk;if(schDept)S.filters.schDept=schDept;if(schLoc)S.filters.schLoc=schLoc;}
-  else if(r==='reports'){const k=['rpType','rpD1','rpD2','rpDept','rpLoc'];const keep={};k.forEach(x=>{if(S.filters[x]!=null)keep[x]=S.filters[x];});S.filters=keep;}
   else{S.filters={};}
   if(r!=='teamview')S.tvUser=null;
   // Update URL hash so email deep-links work
@@ -1659,7 +1644,13 @@ App._lazyLoad=_lazyLoad;App._lazyLoadDate=_lazyLoadDate;
 /* ===== RENDER ===== */
 let _lastUserAction=0; // timestamp of last submit/approve/etc — prevents loadFromSB overwriting fresh state
 function _touchAction(){_lastUserAction=Date.now();}
-function render(){if(!S.uid){$('#app').innerHTML=loginView();return;}$('#app').innerHTML=shell(pageContent());}
+function render(){if(!S.uid){$('#app').innerHTML=loginView();return;}
+  // Preserve the sidebar's own scroll position across a full re-render. Replacing #app innerHTML
+  // rebuilds the sidebar and resets its scrollTop to 0 — which made clicking a lower nav item
+  // (or a section header) jump the sidebar back to the top. Snapshot + restore keeps it in place.
+  const _sb=document.querySelector('.sidebar');const _sy=_sb?_sb.scrollTop:0;
+  $('#app').innerHTML=shell(pageContent());
+  const _sb2=document.querySelector('.sidebar');if(_sb2&&_sy)_sb2.scrollTop=_sy;}
 function rr(){_invalidateNotifCache();const c=$('#content');if(!c)return;
   // A2: rr() is an in-place refresh (filter chips, sub-tabs, toggles, inline edits) — not a route
   //     change. The whole page scrolls via document.scrollingElement (#content has no overflow of
@@ -1701,7 +1692,7 @@ function shell(content){
     const collapsed=(sec.label in S._navCollapsed)?!!S._navCollapsed[sec.label]:!hasActive;
     const show=!collapsed;
     return`<div class="nav-sec${show?'':' collapsed'}">
-      <button class="nav-sec-hdr" onclick="App.toggleNavSec('${sec.label}')"><span class="nav-ico" style="width:14px;height:14px;color:rgba(255,255,255,.45)">${ic(sec.icon,'w-3.5 h-3.5')}</span><span style="flex:1;text-align:left">${sec.label}</span><span class="nav-chev">${ic('chevD','w-3.5 h-3.5')}</span></button>
+      <button class="nav-sec-hdr" onclick="App.toggleNavSec('${sec.label}',this)"><span class="nav-ico" style="width:14px;height:14px;color:rgba(255,255,255,.45)">${ic(sec.icon,'w-3.5 h-3.5')}</span><span style="flex:1;text-align:left">${sec.label}</span><span class="nav-chev">${ic('chevD','w-3.5 h-3.5')}</span></button>
       <div class="nav-sec-body" style="display:flex;flex-direction:column;gap:2px">${sec.items.map(_navItemHTML).join('')}</div>
     </div>`;
   }).join('');
@@ -1736,7 +1727,6 @@ function shell(content){
           <span class="fd" style="font-weight:800;font-size:15px">Shiftly</span>
         </div>
         <div style="flex:1"></div>
-        <button onclick="App.quickAdd()" aria-label="Quick add" title="Quick add" style="display:flex;align-items:center;gap:7px;height:38px;padding:0 14px;border-radius:10px;border:none;background:var(--c-ink);color:#fff;cursor:pointer;font-size:13px;font-weight:700">${ic('plus','w-[18px] h-[18px]')}<span class="hidden md:inline">Create</span></button>
         <button onclick="App.go('notifications')" class="md:hidden" aria-label="Notifications" style="position:relative;width:38px;height:38px;border-radius:10px;border:none;background:transparent;color:var(--c-text);display:grid;place-items:center;cursor:pointer">${ic('bell','w-5 h-5')}${(()=>{const n=_notifCount();return n?`<span style="position:absolute;top:5px;right:5px">${countBadge(n,'danger')}</span>`:'';})()}</button>
         <button onclick="App.go('profile')" class="md:hidden" aria-label="Profile">${avatar(u,'w-8 h-8','text-[11px]')}</button>
       </div>
@@ -1781,18 +1771,6 @@ App.moreMenu=()=>{
 /* W1.4 / X3: role-aware quick-add "+" menu. Reuses existing create handlers — no new logic,
    just a single discoverable entry point. Each action is gated by the same can()/role checks
    that gate its page button, so a user only sees actions they can actually perform. */
-App.quickAdd=()=>{
-  const actions=[];
-  actions.push(['Apply for leave','approve','App.closeModal();App.applyLeave()']);
-  if(can('tickets','create')!==false)actions.push(['New ticket','ticket','App.closeModal();App.newTicket()']);
-  if(can('announcements','create'))actions.push(['New announcement','msg','App.closeModal();App.newAnnouncement()']);
-  if(can('users','create')||isAdmin())actions.push(['Add user','user','App.closeModal();App.editUser()']);
-  if(can('checklists','create')||isAdmin()||isSubAdmin())actions.push(['New checklist','check',"App.closeModal();App.go('checklists')"]);
-  const row=([label,icon,onclick])=>`<button onclick="${onclick}" style="width:100%;display:flex;align-items:center;gap:13px;padding:14px 16px;border-radius:var(--r-md);border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;text-align:left;min-height:56px;margin-bottom:8px">
-    <span style="flex-shrink:0;width:38px;height:38px;border-radius:11px;background:var(--c-brand-soft);color:var(--c-brand-ink);display:grid;place-items:center">${ic(icon,'w-5 h-5')}</span>
-    <span style="flex:1;font-size:14.5px;font-weight:700;color:var(--c-text)">${esc(label)}</span>${ic('chevR','w-4 h-4')}</button>`;
-  modalShell({title:'Create',body:actions.map(row).join(''),size:'max-w-sm'});
-};
 App.saveProfile=async()=>{
   const u=me();if(!u)return;
   const fn=($('#ep-fn')?.value||'').trim();
@@ -1834,7 +1812,8 @@ function pageContent(){
   if(r==='notifications')return notificationsPage();
   if(r==='tickets')return ticketsPage();
   if(r==='hierarchy')return hierarchyPage();
-  if(r==='sops'){if(can('sops','view'))return sopsPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  // SOPs/Onboarding feature retired — redirect any lingering #sops deep-link to the home dashboard.
+  if(r==='sops'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='announcements'){if(can('announcements','view'))return announcementsPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='analytics')return analyticsPage();
   if(r==='audit')return auditPage();
@@ -1848,11 +1827,14 @@ function pageContent(){
   if(r==='leave')return leavePage();
   if(r==='hrmconfig'){if(can('hrSettings','view'))return hrmConfigPage();S.route='attendance';return attendancePage();}
   if(r==='hrmanalytics'){if(can('reports','view'))return hrmAnalyticsPage();S.route='attendance';return attendancePage();}
-  if(r==='reports'){if(can('reports','view'))return reportsPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  // Reports tab removed (folded into HRM Analytics). Any lingering #reports deep-link/notification
+  // redirects to HRM Analytics so old links keep working.
+  if(r==='reports'){S.route='hrmanalytics';if(can('reports','view'))return hrmAnalyticsPage();S.route='attendance';return attendancePage();}
   if(r==='accesscontrol'){if(isAdmin())return accessControlPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='schedule'){if(can('scheduling','manage'))return schedulePage();S.route='myschedule';return mySchedulePage();}
   if(r==='myschedule')return mySchedulePage();
-  if(r==='expenses')return expensesPage();
+  // Expenses feature retired — redirect any lingering #expenses deep-link to the home dashboard.
+  if(r==='expenses'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   return empty('grid','Not found','');
 }
 
@@ -2084,7 +2066,7 @@ function usersPage(){
   // Directory scoped by the resolver (employees area). Keep Super Admin out of the people list
   // for non-admins exactly as before — scopeFilter('employees') handles that. For unassigned
   // users _baseScope yields today's behavior (Admin/SubAdmin → everyone, manager → team).
-  const _canEdit=can('employees','edit'),_canDel=can('employees','delete'),_canOb=can('sops','manage');
+  const _canEdit=can('employees','edit'),_canDel=can('employees','delete');
   let list=scopedUsers('employees');const q=S.search.toLowerCase();
   if(q)list=list.filter(u=>fullName(u).toLowerCase().includes(q)||u.email.toLowerCase().includes(q));
   if(S.filters.dep)list=list.filter(u=>u.department===S.filters.dep);
@@ -2097,7 +2079,7 @@ function usersPage(){
   </div>
   <div class="hidden md:block bg-white rounded-2xl border border-ink-100 shadow-soft overflow-hidden">
     <table class="w-full text-sm"><thead><tr class="text-[10px] text-ink-400 uppercase tracking-wide border-b border-ink-100 text-left"><th class="px-5 py-3 font-semibold">Name</th><th class="px-5 py-3 font-semibold">Department</th><th class="px-5 py-3 font-semibold">Role</th><th class="px-5 py-3 font-semibold">Reports to</th><th class="px-5 py-3 font-semibold">Status</th><th class="px-5 py-3"></th></tr></thead>
-    <tbody class="divide-y divide-ink-50">${list.map(u=>{const mgr=u.managerId?uById(u.managerId):null;const isMgrUser=subTree(u.id).length>0;return`<tr class="hover:bg-ink-50/50"><td class="px-5 py-3"><div class="flex items-center gap-3">${avatar(u,'w-9 h-9','text-xs')}<div><div class="font-semibold">${esc(fullName(u))}</div><div class="text-xs text-ink-400">${esc(u.email)}</div></div></div></td><td class="px-5 py-3">${esc(u.department)}<div class="text-xs text-ink-400">${esc(u.position)}</div></td><td class="px-5 py-3">${u.role==='Admin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#15171C;color:#fff">Super Admin</span>':u.role==='SubAdmin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#EEF2FF;color:#4338CA">Admin</span>':isMgrUser?'<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700">Manager</span>':'<span class="text-xs text-ink-400">User</span>'}</td><td class="px-5 py-3 text-sm">${mgr?esc(fullName(mgr)):'<span class="text-ink-300">—</span>'}</td><td class="px-5 py-3">${chip(u.status)}</td><td class="px-5 py-3"><div class="flex gap-1 justify-end">${(_canEdit||_canDel)?`${_canEdit?`<button onclick="App.editUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'">${ic('edit','w-4 h-4')}</button><button onclick="App.resetPw('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'" title="Reset password">${ic('key','w-4 h-4')}</button>${_disableBtn(u)}`:''}${_canOb?`<button onclick="App._sopAssign('${u.id}')" title="Assign SOP" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'">${ic('list','w-4 h-4')}</button>`:''}${(_canDel&&u.role!=='Admin')?`<button onclick="App.delUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#FFF1F2';this.style.color='#BE123C'" onmouseout="this.style.background='transparent';this.style.color='#9CA3AF'">${ic('trash','w-4 h-4')}</button>`:''}`:'<span class="text-ink-200">—</span>'}</div></td></tr>`;}).join('')}</tbody></table>
+    <tbody class="divide-y divide-ink-50">${list.map(u=>{const mgr=u.managerId?uById(u.managerId):null;const isMgrUser=subTree(u.id).length>0;return`<tr class="hover:bg-ink-50/50"><td class="px-5 py-3"><div class="flex items-center gap-3">${avatar(u,'w-9 h-9','text-xs')}<div><div class="font-semibold">${esc(fullName(u))}</div><div class="text-xs text-ink-400">${esc(u.email)}</div></div></div></td><td class="px-5 py-3">${esc(u.department)}<div class="text-xs text-ink-400">${esc(u.position)}</div></td><td class="px-5 py-3">${u.role==='Admin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#15171C;color:#fff">Super Admin</span>':u.role==='SubAdmin'?'<span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:#EEF2FF;color:#4338CA">Admin</span>':isMgrUser?'<span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-sky-50 text-sky-700">Manager</span>':'<span class="text-xs text-ink-400">User</span>'}</td><td class="px-5 py-3 text-sm">${mgr?esc(fullName(mgr)):'<span class="text-ink-300">—</span>'}</td><td class="px-5 py-3">${chip(u.status)}</td><td class="px-5 py-3"><div class="flex gap-1 justify-end">${(_canEdit||_canDel)?`${_canEdit?`<button onclick="App.editUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'">${ic('edit','w-4 h-4')}</button><button onclick="App.resetPw('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#F3F4F6'" onmouseout="this.style.background='transparent'" title="Reset password">${ic('key','w-4 h-4')}</button>${_disableBtn(u)}`:''}${(_canDel&&u.role!=='Admin')?`<button onclick="App.delUser('${u.id}')" style="width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;background:transparent;border:none;cursor:pointer" onmouseover="this.style.background='#FFF1F2';this.style.color='#BE123C'" onmouseout="this.style.background='transparent';this.style.color='#9CA3AF'">${ic('trash','w-4 h-4')}</button>`:''}`:'<span class="text-ink-200">—</span>'}</div></td></tr>`;}).join('')}</tbody></table>
     ${list.length?'':empty('users','No users','')}
   </div>
   <div class="md:hidden space-y-2">${list.map(u=>{const mgr=u.managerId?uById(u.managerId):null;return`<div class="bg-white rounded-2xl border border-ink-100 shadow-soft p-4" ${_canEdit?`onclick="App.editUser('${u.id}')" style="cursor:pointer"`:''}>
@@ -2413,12 +2395,6 @@ App.saveUser=async(id)=>{
     log(fullName(me()),'Created user',fn+' '+ln);
     toast(fn+' '+ln+' created');
     closeModal();saveDB();render();
-    // Onboarding = the special case "assign the Onboarding-category SOP to a new hire". Non-blocking offer:
-    // prefer an active Onboarding-category SOP; the picker still lets HR choose any SOP.
-    if(newId&&can('sops','manage')&&(DB.sopTemplates||[]).some(t=>t.active!==false)){
-      const ob=(DB.sopTemplates||[]).find(t=>t.active!==false&&/onboard/i.test(t.category||''));
-      setTimeout(()=>{if(confirm('Assign onboarding SOP to '+fn+' '+ln+'?'))App._sopAssign(newId,ob?ob.id:undefined);},250);
-    }
   }
 };
 App.resetPw=(id)=>{
@@ -2956,9 +2932,12 @@ function locsPage(){
       const docs=(DB.documents||[]).filter(x=>x.type==='loc'&&x.scope===l.id).length;
       const folders=(DB.folders||[]).filter(x=>x.type==='loc'&&x.scope===l.id&&!x.parentId).length;
       return'<div onclick="App._openLoc(this.dataset.id)" data-id="'+l.id+'" class="loc-card" style="background:#fff;border-radius:16px;border:1.5px solid #ECEDF0;padding:16px;cursor:pointer;transition:all .15s;display:block;width:100%">'
-        +'<div style="display:flex;justify-content:space-between;margin-bottom:12px">'
-        +'<div style="width:36px;height:36px;border-radius:10px;background:#EFF6FF;display:grid;place-items:center">'+ic('pin','w-4 h-4')+'</div>'
-        +chip(l.status||'Active')+'</div>'
+        +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:12px">'
+        +'<div style="width:36px;height:36px;border-radius:10px;background:#EFF6FF;display:grid;place-items:center;flex-shrink:0">'+ic('pin','w-4 h-4')+'</div>'
+        +'<div style="display:flex;align-items:center;gap:6px">'+chip(l.status||'Active')
+        +(can('locations','edit')?'<button onclick="event.stopPropagation();App.editLoc(this.dataset.id)" data-id="'+l.id+'" aria-label="Edit location" title="Edit location" style="width:28px;height:28px;display:grid;place-items:center;border-radius:7px;color:#6B7280;border:1px solid #ECEDF0;background:#fff;cursor:pointer">'+ic('edit','w-3.5 h-3.5')+'</button>':'')
+        +(can('locations','edit')?'<button onclick="event.stopPropagation();App.delLoc(this.dataset.id)" data-id="'+l.id+'" aria-label="Delete location" title="Delete location" style="width:28px;height:28px;display:grid;place-items:center;border-radius:7px;color:#BE123C;border:1px solid #FECACA;background:#FFF1F2;cursor:pointer">'+ic('trash','w-3.5 h-3.5')+'</button>':'')
+        +'</div></div>'
         +'<div class="fd" style="font-size:15px;font-weight:800;margin-bottom:4px">'+esc(l.name)+'</div>'
         +'<div style="font-size:12px;color:#9CA3AF;margin-bottom:8px">'+esc(l.address||l.department||'')+'</div>'
         +(docs||folders?'<div style="font-size:11px;font-weight:600;color:#3B82F6;margin-bottom:8px">'+folders+' folders · '+docs+' files</div>':'')
@@ -3358,8 +3337,8 @@ let COLL={};  // Hierarchy collapse state
 /* ════════ EMPLOYEE HOME (role-aware landing) ════════
    W2.1 / X1: a plain employee's `dashboard` route previously fell straight through to myClsPage (a
    checklist calendar). homeDash() is the new "what do I need to do today" landing: clock in/out on top,
-   today's checklist status, my pending leave (where it's stuck), SOPs assigned to me, and quick actions.
-   Reuses _clockWidget, _mySopCard, _leaveChainView — no new data model, all presentation/composition. */
+   today's checklist status, my pending leave (where it's stuck), and quick actions.
+   Reuses _clockWidget, _leaveChainView — no new data model, all presentation/composition. */
 function homeDash(){
   const u=me();const today=todayISO();
   const hr=new Date().getHours();
@@ -3440,7 +3419,6 @@ function homeDash(){
     ${_clockWidget()}
     ${_myShiftsCard()}
     ${tiles?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">${tiles}</div>`:''}
-    ${_mySopCard()}
     <div class="grid md:grid-cols-2 gap-4 items-start" style="margin-bottom:16px">${clCard}${leaveCard}</div>
     <div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Quick actions</div>
     ${quickActions}
@@ -3462,7 +3440,6 @@ function myClsPage(){
   const pendN=dayCls.filter(c=>!subForCl(c,S.uid,sel)).length-lateN;
 
   return`<div class="fade">
-  ${_mySopCard()}
   <!-- Title row -->
   <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px">
     <div>
@@ -4324,37 +4301,42 @@ const _APPR_META={
   submission: {icon:'check',    label:'Submissions', chip:'Submissions'},
   edit:       {icon:'edit',     label:'Edits',       chip:'Edits'},
   document:   {icon:'doc',      label:'Documents',   chip:'Documents'},
-  sop:        {icon:'list',     label:'SOPs',        chip:'SOPs'},
-  expense:    {icon:'receipt',  label:'Expenses',    chip:'Expenses'},
 };
-const _APPR_ORDER=['leave','submission','edit','document','sop','expense'];
+const _APPR_ORDER=['leave','submission','edit','document'];
 function unifiedApprovalsPage(){
   const all=_approvalInbox();
-  // Single unified list: EVERYTHING (pending + decided) shows here in one view. Pending items
-  // sort to the top (actionable); decided items follow by most-recent. The per-row status badge
-  // distinguishes approved/rejected. Type chips below act as an optional filter.
+  // Status sub-tabs: Pending / Approved / Rejected. Default Pending (the actionable view).
+  // Notification deep-links set S.filters.atab to land the user on the right sub-tab.
+  const statusTab=S.filters.atab||'Pending';
   const typeF=S.filters.inboxType||'all';
-  // Which types exist AT ALL → drives the chips shown.
-  const presentTypes=new Set(all.map(x=>x.type));
-  let rows=all.slice();
+  // Count per status (independent of the active type filter) for the sub-tab badges.
+  const _byStatus=s=>all.filter(x=>x.status===s).length;
+  const STAT=['Pending','Approved','Rejected'];
+  const statBadge=(n,on)=>n?(' <span style="display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;padding:1px 6px;min-width:16px;border-radius:99px;margin-left:6px;background:'+(on?'rgba(255,255,255,.22)':'var(--c-border)')+';color:'+(on?'#fff':'var(--c-text-2)')+'">'+n+'</span>'):'';
+  const statusBar='<div class="ui-tabs" style="margin-bottom:16px">'
+    +STAT.map(t=>{const on=statusTab===t;return '<button class="ui-tab'+(on?' on':'')+'" onclick="App._setApprTab(this.dataset.t)" data-t="'+t+'">'+t+statBadge(_byStatus(t),on)+'</button>';}).join('')
+    +'</div>';
+  // Rows for the active status tab.
+  let rows=all.filter(x=>x.status===statusTab);
+  // Type filter chips — only the types present WITHIN the active status tab.
+  const presentTypes=new Set(rows.map(x=>x.type));
   if(typeF!=='all')rows=rows.filter(x=>x.type===typeF);
-  const _rank=s=>s==='Pending'?0:1;
-  rows.sort((a,b)=>{const r=_rank(a.status)-_rank(b.status);if(r)return r;const ta=a.payload?.createdAt||'';const tb=b.payload?.createdAt||'';return tb.localeCompare(ta);});
-  const statusBar='';
-  // type filter chips — only show 'All' + types that have items
+  rows.sort((a,b)=>{const ta=a.payload?.createdAt||'';const tb=b.payload?.createdAt||'';return tb.localeCompare(ta);});
   const chips=(presentTypes.size>1)?('<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;overflow-x:auto">'
     +[['all','All']].concat(_APPR_ORDER.filter(t=>presentTypes.has(t)).map(t=>[t,_APPR_META[t].label]))
       .map(([k,l])=>{const a=typeF===k;return '<button class="ui-tab-pill'+(a?' on':'')+'" onclick="App._setInboxType(this.dataset.k)" data-k="'+k+'">'+esc(l)+'</button>';}).join('')
     +'</div>'):'';
-  // Bulk-approve bar: only when a single type is filtered (same type) and pending items exist.
-  const bulkable=typeF!=='all'&&rows.some(r=>r.status==='Pending');
-  const _pendN=rows.filter(r=>r.status==='Pending').length;
-  const bulkBar=bulkable?'<div style="margin-bottom:12px"><button class="ui-btn ui-btn-brand ui-btn-sm" onclick="App._bulkApproveInbox(this.dataset.t)" data-t="'+esc(typeF)+'">'+ic('approve','w-4 h-4')+'Approve all '+esc(_APPR_META[typeF].label.toLowerCase())+' ('+_pendN+')</button></div>':'';
+  // Bulk-approve bar: only on the Pending tab, when a single type is filtered.
+  const bulkable=statusTab==='Pending'&&typeF!=='all'&&rows.length;
+  const bulkBar=bulkable?'<div style="margin-bottom:12px"><button class="ui-btn ui-btn-brand ui-btn-sm" onclick="App._bulkApproveInbox(this.dataset.t)" data-t="'+esc(typeF)+'">'+ic('approve','w-4 h-4')+'Approve all '+esc(_APPR_META[typeF].label.toLowerCase())+' ('+rows.length+')</button></div>':'';
+  const emptyMsg=statusTab==='Pending'?['approve','Nothing pending','You\'re all caught up.']
+    :statusTab==='Approved'?['approve','No approved items','Approved requests will appear here.']
+    :['x','No rejected items','Rejected requests will appear here.'];
   const body=rows.length?rows.map(_inboxRow).join('')
     :(_isLoading('approvals')?loadingState('Loading approvals…')
-      :empty('approve','No approvals','You\'re all caught up.'));
-  return '<div class="fade">'+hdr('Approvals','Every pending decision in one place')
-    +chips+statusBar+bulkBar
+      :empty(emptyMsg[0],emptyMsg[1],emptyMsg[2]));
+  return '<div class="fade">'+hdr('Approvals','Every request to review, in one place')
+    +statusBar+chips+bulkBar
     +'<div class="space-y-3">'+body+'</div></div>';
 }
 // One normalised inbox row. Tapping the body opens type-specific detail; Approve/Reject route
@@ -4368,19 +4350,11 @@ function _inboxRow(x){
     ? "App._inboxDecide('"+esc(x.id)+"','approve')"
     : x._src.coll==='documents'
     ? "App._decideDoc('"+esc(x._src.id)+"','approve')"
-    : x._src.coll==='sop_instances'
-    ? "App._inboxDecideSop('"+esc(x.id)+"','approve')"
-    : x._src.coll==='expenses'
-    ? "App._decideExpense('"+esc(x._src.id)+"','approve')"
     : "App._decideApprove('"+esc(x._src.id)+"')";
   const rejectCall=x._src.coll==='leaveRequests'
     ? "App._inboxDecide('"+esc(x.id)+"','reject')"
     : x._src.coll==='documents'
     ? "App._decideDoc('"+esc(x._src.id)+"','reject')"
-    : x._src.coll==='sop_instances'
-    ? "App._inboxDecideSop('"+esc(x.id)+"','reject')"
-    : x._src.coll==='expenses'
-    ? "App._decideExpense('"+esc(x._src.id)+"','reject')"
     : "App._decideReject('"+esc(x._src.id)+"')";
   return '<div class="ui-card" style="padding:16px">'
     +'<div onclick="App._inboxOpen(\''+esc(x.id)+'\')" style="display:flex;align-items:flex-start;gap:12px;cursor:pointer">'
@@ -4400,6 +4374,9 @@ function _inboxRow(x){
     +'</div>';
 }
 App._setInboxType=(k)=>{S.filters.inboxType=k;rr();};
+// Approvals status sub-tab (Pending / Approved / Rejected). Reset the type filter so switching
+// status never leaves a stale type chip selected for a type that has no items in the new tab.
+App._setApprTab=(t)=>{S.filters.atab=t;S.filters.inboxType='all';rr();};
 // Open type-specific detail reusing existing renderers.
 App._inboxOpen=(iid)=>{
   const x=_approvalInbox().find(i=>i.id===iid);if(!x)return;
@@ -4421,25 +4398,6 @@ App._inboxOpen=(iid)=>{
       +btn('View file','App._previewDoc(\''+esc(d.id)+'\')',{variant:'ghost',attrs:'style="width:100%"'})
       +(x.status!=='Pending'?'<div style="font-size:12px;color:var(--c-text-2);margin-top:8px">'+esc(x.status)+(d.decisionNote?' · '+esc(d.decisionNote):'')+'</div>':''),
       footer:x.status==='Pending'?btn('Approve','App.closeModal();App._decideDoc(\''+esc(d.id)+'\',\'approve\')',{variant:'brand'})+btnDanger('Reject','App.closeModal();App._decideDoc(\''+esc(d.id)+'\',\'reject\')'):''});
-    return;
-  }
-  if(x.type==='sop'){
-    const s=x.payload;const hire=uById(x.requestedBy);
-    modalShell({title:s.title,sub:fullName(hire)+(hire?.department?' · '+hire.department:''),size:'max-w-md',
-      body:'<div style="font-size:12px;color:var(--c-text-2)">'+esc(_OB_ASG[s.assignee]||s.assignee)+' step · '+(s.kind==='document'?'document':'task')+'</div>'
-      +(s.note?'<div style="font-size:12px;color:var(--c-text-2);margin-top:8px;background:var(--c-surface-2);border-radius:8px;padding:8px">'+esc(s.note)+'</div>':'')
-      +(x.status!=='Pending'?'<div style="font-size:12px;color:var(--c-text-2);margin-top:8px">'+esc(x.status)+'</div>':''),
-      footer:x.status==='Pending'?btn('Approve','App.closeModal();App._inboxDecideSop(\''+esc(x.id)+'\',\'approve\')',{variant:'brand'})+btnDanger('Reject','App.closeModal();App._inboxDecideSop(\''+esc(x.id)+'\',\'reject\')'):''});
-    return;
-  }
-  if(x.type==='expense'){
-    const e=x.payload;const emp=uById(e.userId);
-    modalShell({title:_fmtMoney(e.amount,e.currency),sub:fullName(emp)+(emp?.department?' · '+emp.department:''),size:'max-w-md',
-      body:'<div style="font-size:14px;font-weight:700;color:var(--c-text)">'+esc(e.category||'Other')+' · '+fmtD(e.date)+'</div>'
-      +(e.description?'<div style="font-size:12.5px;color:var(--c-text-2);margin-top:8px;background:var(--c-surface-2);border-radius:8px;padding:8px">'+esc(e.description)+'</div>':'')
-      +(e.receiptNote?'<div style="font-size:12px;color:var(--c-text-3);margin-top:8px">Receipt: '+esc(e.receiptNote)+'</div>':'')
-      +(x.status!=='Pending'?'<div style="font-size:12px;color:var(--c-text-2);margin-top:8px">'+esc(x.status)+(e.decisionNote?' · '+esc(e.decisionNote):'')+'</div>':''),
-      footer:x.status==='Pending'?btn('Approve','App.closeModal();App._decideExpense(\''+esc(e.id)+'\',\'approve\')',{variant:'brand'})+btnDanger('Reject','App.closeModal();App._decideExpense(\''+esc(e.id)+'\',\'reject\')'):''});
     return;
   }
   if(x.type==='submission'||x.type==='edit'){
@@ -4474,8 +4432,6 @@ App._bulkApproveInbox=(type)=>{
   rows.forEach(x=>{
     if(x._src.coll==='leaveRequests'){const r=(DB.leaveRequests||[]).find(z=>z.id===x._src.id);if(r&&r.status==='Pending'&&_canActOn(r)){App.decideLeave(r.id,'approve',(r.stageIndex!=null?r.stageIndex:0));n++;}}
     else if(x._src.coll==='documents'){const d=(DB.documents||[]).find(z=>z.id===x._src.id);if(d&&d.approvalStatus==='pending'&&d.uploadedBy!==S.uid&&can('documentsOrg','approve')){App._doDecideDoc(d.id,'approve');n++;}}
-    else if(x._src.coll==='sop_instances'){const inst=(DB.sopInstances||[]).find(z=>z.id===x._src.id);const step=inst&&(inst.steps||[]).find(s=>s.id===x._src.stepId);if(inst&&step&&step.status==='submitted'&&inst.userId!==S.uid&&can('sops','approve')){App._decideSopStep(inst.id,step.id,'approve');n++;}}
-    else if(x._src.coll==='expenses'){const e=(DB.expenses||[]).find(z=>z.id===x._src.id);if(e&&e.status==='pending'&&e.userId!==S.uid&&can('expenses','approve')){App._decideExpense(e.id,'approve');n++;}}
     else{const a=DB.approvals.find(z=>z.id===x._src.id);if(a&&a.status==='Pending'&&a.requesterId!==S.uid){App._decideApprove(a.id);n++;}}
   });
   toast(n+' approved');
@@ -4598,7 +4554,7 @@ App._viewSubFor=async(btn)=>{
 /* ===== BOOT ===== */
 (async function boot(){
   const _hashRoute=(window.location.hash||'').replace('#','').trim();
-  const VALID_ROUTES=['dashboard','mychecklists','users','hierarchy','sops','checklists','allcl','questions','approvals','notifications','analytics','locations','departments','settings','audit','teamview','profile','attendance','leave','hrmconfig','hrmanalytics','accesscontrol','announcements','schedule','myschedule','expenses','reports','tickets'];
+  const VALID_ROUTES=['dashboard','mychecklists','users','hierarchy','checklists','allcl','questions','approvals','notifications','analytics','locations','departments','settings','audit','teamview','profile','attendance','leave','hrmconfig','hrmanalytics','accesscontrol','announcements','schedule','myschedule','reports','tickets'];
   const _deepLink=VALID_ROUTES.includes(_hashRoute)?_hashRoute:null;
   try{const{data:{session}}=await sb.auth.getSession();if(session){
       // Load local cache first for instant UI
@@ -4654,6 +4610,25 @@ document.addEventListener('visibilitychange',()=>{
 let _QED=null;
 
 // ── Questions CSV template download ──
+// Export every question the user can see as a CSV in the SAME column layout as the import
+// template, so the file can be edited and re-uploaded. Number questions export their first
+// condition (template supports one condition per row).
+App._downloadAllQuestions=()=>{
+  const qs=visibleQuestions();
+  if(!qs.length){toast('No questions to download','err');return;}
+  const header=['text','type','option1','option2','option3','option4','option5','photo_required','comment_required','approval_required','number_condition','value','value2'];
+  const rows=[header];
+  qs.forEach(q=>{
+    const opts=Array.isArray(q.options)?q.options:[];
+    const o=['','','','',''];let cond='',val='',val2='';
+    if(q.type==='answer'){for(let i=0;i<5;i++)o[i]=opts[i]?(opts[i].text||''):'';}
+    else if(q.type==='number'){const c=opts[0]||{};cond=c.condition||'';val=(c.value!=null?c.value:'');val2=(c.value2!=null?c.value2:'');}
+    rows.push([q.text||'',q.type||'answer',o[0],o[1],o[2],o[3],o[4],
+      q.photo?'TRUE':'FALSE',q.comment?'TRUE':'FALSE',q.approval?'TRUE':'FALSE',cond,val,val2]);
+  });
+  _csvDownload(rows,'shiftly_questions');
+  toast('Downloaded '+qs.length+' question'+(qs.length>1?'s':''));
+};
 App._downloadQTemplate=()=>{
   // Clean template — just header + examples (no instruction rows to delete)
   const rows=[
@@ -4837,11 +4812,12 @@ function questionsPage(){
   // a profile with view-only now correctly hides the create/import controls.
   const canMng=can('questions','manage');
   return`<div class="fade">${hdr('Questions','Reusable question library for your checklists',canMng?btnP('New question','App._editQuestion(null)','plus'):'')}
-    <!-- Action bar: Search -->
+    <!-- Action bar: Search + download all -->
     <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
       <input id="qSearchInput" type="text" placeholder="Search questions…" value="${S.filters.qSearch||''}"
         oninput="App._filterQuestions(this.value)"
         class="ui-input rf" style="flex:1;min-width:180px"/>
+      ${allQ.length?btn('Download all','App._downloadAllQuestions()',{variant:'ghost',size:'sm',icon:'download'}):''}
     </div>
     ${canMng?`<!-- CSV Import / Export bar -->
     <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;padding:12px 14px;background:var(--c-surface-2);border-radius:var(--r-md);border:1px solid var(--c-border)">
@@ -5466,8 +5442,7 @@ function notificationsPage(){
     // N7/E2: prefer the structured kind; fall back to text matching for legacy kind-less rows.
     if(kind){
       const K={feedback:'feedback',escalation:'escalation',ticket:'escalation',
-        submission:'approval',edit:'edit',document:'approval',sop:'approval',
-        expense:'approval',leave:'approval'};
+        submission:'approval',edit:'edit',document:'approval',leave:'approval'};
       if(K[kind])return K[kind];
     }
     if(!text)return'general';
@@ -5571,7 +5546,7 @@ function _navNotif(route,filters){
 const _NOTIF_ROUTE={
   leave:'leave',
   submission:'approvals', edit:'approvals',
-  document:'approvals', sop:'approvals', expense:'approvals', // pending-approval default; decided rows set targetRoute
+  document:'approvals', // pending-approval default; decided rows set targetRoute
   ticket:'tickets', escalation:'tickets',
   feedback:'feedback',
   announcement:'announcements',
@@ -5607,14 +5582,14 @@ App._notifClick=(id)=>{
   // H1: leave notifications must open the LEAVE page, not the checklist Approvals page.
   const _isLeaveText=/(Your .* (was approved|was rejected|passed)|your approval needed|needs your approval|reached a stage with no approver|requested .* — your approval)/.test(t);
   if(_isLeaveText){ _navNotif('leave',{}); return; }
-  // N3: route tickets before the generic approved/approval checks so a ticket whose
-  // title contains those words still opens the Tickets page.
+  // N3: route tickets + escalations BEFORE the generic approved/approval checks so a ticket or
+  // escalation whose text happens to contain those words still opens the Tickets page (not Approvals).
   if(t.includes('🎫')||t.includes('Ticket')||t.includes('ticket')){ App._setNTab&&App._setNTab('All');App.go('tickets'); return; }
+  if(t.includes('Escalation')||t.includes('escalation')){ App._setNTab&&App._setNTab('All');App.go('tickets'); return; }
   if(t.includes('approved')||t.includes('Approved')){ _navNotif('approvals',{atab:'Approved'}); return; }
   if(t.includes('rejected')||t.includes('Rejected')){ _navNotif('approvals',{atab:'Rejected'}); return; }
   if(t.includes('approval')||t.includes('Pending')){ _navNotif('approvals',{atab:'Pending'}); return; }
   if(t.includes('submitted')||t.includes('resubmit')||t.includes('Re-submitted')){ _navNotif('approvals',{atab:'Pending'}); return; }
-  if(t.includes('Escalation')||t.includes('escalation')){ App.go('tickets'); return; }
   if(t.includes('Checklist removed')||t.includes('no longer assigned')){ App.go('mychecklists'); return; }
   // Default: go to notifications
   App._setNTab('All');App.go('notifications');
@@ -5684,24 +5659,11 @@ App._sfbSelectType=(btn)=>{
   const type=btn.dataset.type;
   // Store in hidden input for reliable reading
   const hid=document.getElementById('sfb-type-val');if(hid)hid.value=type;
-  // Show/hide checklist+task based on type — use explicit wrapper IDs
+  // Show/hide the checklist picker based on feedback type — use explicit wrapper ID
   const clWrap=document.getElementById('sfb-cl-wrap');
-  const taskWrap=document.getElementById('sfb-task-wrap');
-  if(type==='Performance'||type==='General'){
-    if(clWrap)clWrap.style.display='none';
-    if(taskWrap)taskWrap.style.display='none';
-  } else if(type==='Checklist'){
-    if(clWrap)clWrap.style.display='';
-    if(taskWrap)taskWrap.style.display='none';
-  } else {
-    if(clWrap)clWrap.style.display='';
-  }
+  if(clWrap)clWrap.style.display=(type==='Performance'||type==='General')?'none':'';
 };
-App._sfbClChange=(clId)=>{
-  // Tasks removed — task selector always hidden
-  const taskWrap=document.getElementById('sfb-task-wrap');
-  if(taskWrap)taskWrap.style.display='none';
-};
+App._sfbClChange=(clId)=>{ /* no-op: kept for the checklist <select> onchange binding */ };
 App._saveSendFeedback=(userId)=>{
   if(!userId){toast('No user selected','err');return;}
   const title=$('#sfb-title')?.value?.trim();
@@ -6607,342 +6569,8 @@ App._doDecideDoc=(id,action)=>{
   closeModal();toast(action==='approve'?'Approved':'Rejected');rr();
 };
 
-/* ═══════════════ EXPENSE CLAIMS — decide from the unified inbox (mirrors _decideDoc/_doDecideDoc) ═══════════════ */
-// Approve/reject an expense claim. Gated on can('expenses','approve') + not-self. Reject opens a reason
-//   modal (id 'exp-rnote', mirroring doc-rnote/lv-rnote); the note is sent to the submitter. Sets status/
-//   decidedBy/decidedAt/decisionNote, notifies the submitter of the outcome, persists, refreshes.
-App._decideExpense=(id,action)=>{
-  const e=(DB.expenses||[]).find(x=>x.id===id);
-  if(!e){toast('Claim not found','err');return;}
-  if(!can('expenses','approve')){toast('Not permitted','err');return;}
-  if(e.userId===S.uid){toast('You cannot approve your own claim','err');return;} // self-approve guard
-  if(e.status!=='pending'){toast('Already decided','warn');rr();return;}
-  if(action==='reject'){
-    modalShell({title:'Reject claim',sub:_fmtMoney(e.amount,e.currency)+' · '+(e.category||'Other'),size:'max-w-md',
-      body:'<textarea id="exp-rnote" rows="3" class="ui-input rf" placeholder="Reason for rejection (sent to the submitter)"></textarea>',
-      footer:btnG('Cancel','App.closeModal()')+btnDanger('Reject','App._doDecideExpense(\''+esc(e.id)+'\',\'reject\')')});
-    return;
-  }
-  App._doDecideExpense(id,'approve');
-};
-// Commit the expense decision (note read from the reject modal when present).
-App._doDecideExpense=(id,action)=>{
-  const e=(DB.expenses||[]).find(x=>x.id===id);
-  if(!e){toast('Claim not found','err');return;}
-  if(!can('expenses','approve')){toast('Not permitted','err');return;}
-  if(e.userId===S.uid){toast('You cannot approve your own claim','err');return;}
-  if(e.status!=='pending'){toast('Already decided','warn');closeModal();rr();return;}
-  const note=action==='reject'?(document.getElementById('exp-rnote')?.value||'').trim():'';
-  e.status=action==='approve'?'approved':'rejected';
-  e.decidedBy=S.uid;e.decidedAt=new Date().toISOString();e.decisionNote=note||null;
-  saveDB();
-  if(typeof sb!=='undefined'&&sb)sb.from('expenses').update({status:e.status,decided_by:e.decidedBy,decided_at:e.decidedAt,decision_note:e.decisionNote}).eq('id',id)
-    .then(({error})=>{if(error)_syncErr('expense decision')(error);}).catch(_syncErr('expense decision'));
-  _hrmNotify(e.userId,(action==='approve'?'✅ Your expense claim ':'❌ Your expense claim ')+_fmtMoney(e.amount,e.currency)+' ('+(e.category||'Other')+') was '+e.status+(note?': '+note:'.'),'expense','expenses');
-  hlog('Expense '+e.status,_fmtMoney(e.amount,e.currency)+' · '+(e.category||'Other')+(note?' — '+note:''));
-  closeModal();toast(action==='approve'?'Approved':'Rejected');rr();
-};
-
-/* ═══════════════ SOPs — library you can also assign (templates + per-assignee instances) ═══════════════ */
-//   A SOP = a written, stored procedure {name,category,description,content body,ordered steps}. It is
-//   BROWSABLE/READABLE by category (the knowledge base), AUTHORABLE by HR (can('sops','manage')), and
-//   ASSIGNABLE to ANY employee → a per-assignee instance that snapshots the steps + tracks completion,
-//   with requiresApproval steps surfacing in the unified inbox. ONBOARDING is the special case: a SOP in
-//   the 'Onboarding' category assigned to a new hire (the new-user prompt / Users 📋 action).
-// snake_case row for the sop_instances table (mirrors the leave_requests upsert shape).
-function _obRow(i){return {id:i.id,template_id:i.templateId||null,user_id:i.userId,status:i.status||'active',steps:i.steps||[],created_by:i.createdBy||null,created_at:i.createdAt||new Date().toISOString(),completed_at:i.completedAt||null};}
-function _otRow(t){return {id:t.id,name:t.name||'',category:t.category||'',description:t.description||'',content:t.content||'',steps:t.steps||[],active:t.active!==false,created_by:t.createdBy||null,created_at:t.createdAt||new Date().toISOString()};}
-// progress roll-up: a step counts "done" when status is 'done' (task) or 'approved' (approval step).
-function _sopProgress(inst){const steps=(inst&&inst.steps)||[];const done=steps.filter(s=>s.status==='done'||s.status==='approved').length;return{done,total:steps.length};}
-// flip the instance to completed once every step is resolved (done/approved). Notifies once.
-function _checkSopComplete(inst){
-  if(!inst||inst.status==='completed')return false;
-  const steps=inst.steps||[];if(!steps.length)return false;
-  if(!steps.every(s=>s.status==='done'||s.status==='approved'))return false;
-  inst.status='completed';inst.completedAt=new Date().toISOString();
-  _hrmNotify(inst.userId,'🎉 You completed your assigned SOP!','sop','dashboard');
-  // notify the HR/Admin/manager who assigned it (informational)
-  if(inst.createdBy&&inst.createdBy!==inst.userId)_hrmNotify(inst.createdBy,'🎉 '+fullName(uById(inst.userId))+' completed their assigned SOP.','sop','sops');
-  return true;
-}
-// targeted upsert for immediacy (don't wait for the 1.5s debounce) — mirrors the leave saver.
-function _saveSopInstance(inst){if(typeof sb!=='undefined'&&sb)sb.from('sop_instances').upsert([_obRow(inst)],{onConflict:'id'}).then(({error})=>{if(error)_syncErr('SOP')(error);}).catch(_syncErr('SOP'));}
-function _saveSopTemplate(t){if(typeof sb!=='undefined'&&sb)sb.from('sop_templates').upsert([_otRow(t)],{onConflict:'id'}).then(({error})=>{if(error)_syncErr('SOP')(error);}).catch(_syncErr('SOP'));}
-
-// ── SOP authoring (HR / can('sops','manage')) — title, category, description, content body + ordered steps ──
-App._sopTplEditor=(id)=>{
-  if(!can('sops','manage')){toast('Not permitted','err');return;}
-  const t=id?(DB.sopTemplates||[]).find(x=>x.id===id):null;
-  const steps=t?(t.steps||[]).slice():[];
-  // stash a working copy on a transient editor buffer so add/remove/reorder don't touch the live SOP
-  _OBE={id:id||null,name:t?t.name:'',category:t?(t.category||''):'',description:t?t.description:'',content:t?(t.content||''):'',steps:JSON.parse(JSON.stringify(steps))};
-  _sopRenderTplModal();
-};
-let _OBE=null;
-function _sopRenderTplModal(){
-  const e=_OBE;if(!e)return;
-  const kindOpts=[['task','Task (mark done)'],['document','Document (attach / note)']];
-  const asgOpts=[['employee','Assignee'],['hr','HR'],['manager','Manager']];
-  const stepRows=e.steps.map((s,idx)=>'<div style="background:#F9FAFB;border:1px solid #ECEDF0;border-radius:12px;padding:10px;margin-bottom:8px">'
-    +'<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><input id="sop-title-'+idx+'" value="'+esc(s.title||'')+'" placeholder="Step title" class="rf" style="flex:1;background:#fff;border:1px solid #ECEDF0;border-radius:8px;padding:7px 9px;font-size:13px"/>'
-    +'<button onclick="App._sopStepMove('+idx+',-1)" title="Up" style="width:28px;height:28px;border:1px solid #ECEDF0;background:#fff;border-radius:8px;cursor:pointer">↑</button>'
-    +'<button onclick="App._sopStepMove('+idx+',1)" title="Down" style="width:28px;height:28px;border:1px solid #ECEDF0;background:#fff;border-radius:8px;cursor:pointer">↓</button>'
-    +'<button onclick="App._sopStepDel('+idx+')" title="Remove" style="width:28px;height:28px;border:1px solid #FECACA;color:#B91C1C;background:#fff;border-radius:8px;cursor:pointer;display:grid;place-items:center">'+ic('x','w-3.5 h-3.5')+'</button></div>'
-    +'<textarea id="sop-note-'+idx+'" rows="2" placeholder="Step detail / instructions (optional)" class="rf" style="width:100%;background:#fff;border:1px solid #ECEDF0;border-radius:8px;padding:6px 8px;font-size:12px;margin-bottom:6px">'+esc(s.content||'')+'</textarea>'
-    +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
-    +'<select id="sop-kind-'+idx+'" class="rf" style="background:#fff;border:1px solid #ECEDF0;border-radius:8px;padding:6px 8px;font-size:12px">'+kindOpts.map(o=>'<option value="'+o[0]+'"'+(s.kind===o[0]?' selected':'')+'>'+esc(o[1])+'</option>').join('')+'</select>'
-    +'<select id="sop-asg-'+idx+'" class="rf" style="background:#fff;border:1px solid #ECEDF0;border-radius:8px;padding:6px 8px;font-size:12px">'+asgOpts.map(o=>'<option value="'+o[0]+'"'+(s.assignee===o[0]?' selected':'')+'>'+esc(o[1])+'</option>').join('')+'</select>'
-    +'<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#374151"><input type="checkbox" id="sop-appr-'+idx+'"'+(s.requiresApproval?' checked':'')+'/> Requires approval</label>'
-    +'</div></div>').join('');
-  modalShell({title:(e.id?'Edit':'New')+' SOP',size:'max-w-lg',
-    body:fld('SOP title','sop-name',e.name,'text','e.g. Standard new hire')
-    +'<div style="margin-top:8px">'+fld('Category','sop-cat',e.category,'text','e.g. Onboarding, IT, Safety')+'</div>'
-    +'<div style="margin-top:8px">'+fld('Description','sop-desc',e.description,'text','One-line summary')+'</div>'
-    +'<div style="margin-top:8px"><label style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--c-text-3);display:block;margin-bottom:4px">Procedure (written body)</label><textarea id="sop-content" rows="4" class="ui-input rf" placeholder="The written, stored procedure — readable in the library.">'+esc(e.content||'')+'</textarea></div>'
-    +'<div style="margin-top:12px"><p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--c-text-3);margin-bottom:8px">Steps</p>'+(stepRows||'<p style="font-size:12px;color:var(--c-text-3);margin-bottom:8px">No steps yet.</p>')
-    +'<button type="button" onclick="App._sopStepAdd()" style="width:100%;padding:10px;border-radius:10px;border:1px dashed var(--c-border);background:var(--c-surface);font-weight:600;font-size:13px;cursor:pointer;color:var(--c-text-2)">+ Add step</button></div>',
-    footer:btnG('Cancel','App.closeModal()')+btnP('Save SOP','App._sopTplSave()')});
-}
-// read the current DOM values back into the buffer before any structural change/re-render
-function _sopSyncBuffer(){
-  if(!_OBE)return;
-  _OBE.name=($('#sop-name')?.value||'').trim();
-  _OBE.category=($('#sop-cat')?.value||'').trim();
-  _OBE.description=($('#sop-desc')?.value||'').trim();
-  _OBE.content=($('#sop-content')?.value||'').trim();
-  _OBE.steps.forEach((s,idx)=>{
-    const ti=$('#sop-title-'+idx);if(ti)s.title=ti.value.trim();
-    const ct=$('#sop-note-'+idx);if(ct)s.content=ct.value.trim();
-    const k=$('#sop-kind-'+idx);if(k)s.kind=k.value;
-    const a=$('#sop-asg-'+idx);if(a)s.assignee=a.value;
-    const ap=$('#sop-appr-'+idx);if(ap)s.requiresApproval=ap.checked;
-  });
-}
-App._sopStepAdd=()=>{_sopSyncBuffer();_OBE.steps.push({id:uid('obs'),title:'',content:'',kind:'task',assignee:'employee',requiresApproval:false});_sopRenderTplModal();};
-App._sopStepDel=(idx)=>{_sopSyncBuffer();_OBE.steps.splice(idx,1);_sopRenderTplModal();};
-App._sopStepMove=(idx,dir)=>{_sopSyncBuffer();const j=idx+dir;if(j<0||j>=_OBE.steps.length)return;const s=_OBE.steps[idx];_OBE.steps[idx]=_OBE.steps[j];_OBE.steps[j]=s;_sopRenderTplModal();};
-App._sopTplSave=()=>{
-  if(!can('sops','manage')){toast('Not permitted','err');return;}
-  _sopSyncBuffer();const e=_OBE;if(!e){return;}
-  if(!e.name){toast('SOP title required','err');return;}
-  const steps=e.steps.filter(s=>s.title).map(s=>({id:s.id||uid('obs'),title:s.title,content:s.content||'',kind:s.kind==='document'?'document':'task',assignee:['employee','hr','manager'].includes(s.assignee)?s.assignee:'employee',requiresApproval:!!s.requiresApproval}));
-  if(!steps.length){toast('Add at least one step','err');return;}
-  if(!Array.isArray(DB.sopTemplates))DB.sopTemplates=[];
-  let t=e.id?DB.sopTemplates.find(x=>x.id===e.id):null;
-  if(t){Object.assign(t,{name:e.name,category:e.category,description:e.description,content:e.content,steps});}
-  else{t={id:uid('obt'),name:e.name,category:e.category,description:e.description,content:e.content,steps,active:true,createdBy:S.uid,createdAt:new Date().toISOString()};DB.sopTemplates.push(t);}
-  _OBE=null;saveDB();_saveSopTemplate(t);hlog('SOP saved',t.name);closeModal();toast('SOP saved');rr();
-};
-App._sopTplDel=(id)=>{
-  if(!can('sops','manage')){toast('Not permitted','err');return;}
-  const t=(DB.sopTemplates||[]).find(x=>x.id===id);if(!t)return;
-  if(!confirm('Delete SOP "'+t.name+'"? In-flight assignments keep their own copy.'))return;
-  DB.sopTemplates=(DB.sopTemplates||[]).filter(x=>x.id!==id);
-  saveDB();if(typeof sb!=='undefined'&&sb)sb.from('sop_templates').delete().eq('id',id).then(()=>{}).catch(_syncErr('SOP'));
-  hlog('SOP deleted',t.name);toast('Deleted','warn');rr();
-};
-
-// ── Assign a SOP to ANY employee (snapshot the SOP's steps into a new instance) ──
-App._sopAssign=(userId,templateId)=>{
-  if(!can('sops','manage')){toast('Not permitted','err');return;}
-  const u=uById(userId);if(!u){toast('User not found','err');return;}
-  // if no SOP chosen yet, open a picker
-  const tpls=(DB.sopTemplates||[]).filter(t=>t.active!==false);
-  if(!templateId){
-    if(!tpls.length){toast('Author a SOP first','warn');return;}
-    modalShell({title:'Assign SOP',sub:'To '+fullName(u),size:'max-w-sm',
-      body:selF('SOP','obstart-tpl',tpls.map(t=>[t.id,t.name+(t.category?' ['+t.category+']':'')+' ('+(t.steps||[]).length+' steps)']),tpls[0].id),
-      footer:btnG('Cancel','App.closeModal()')+btnP('Assign','App._sopAssign(\''+esc(userId)+'\',document.getElementById(\'obstart-tpl\').value)')});
-    return;
-  }
-  const tpl=(DB.sopTemplates||[]).find(t=>t.id===templateId);if(!tpl){toast('SOP not found','err');return;}
-  // SNAPSHOT steps + init per-step state (SOP edits later never mutate this instance)
-  const steps=(tpl.steps||[]).map(s=>({id:s.id,title:s.title,content:s.content||'',kind:s.kind,assignee:s.assignee,requiresApproval:!!s.requiresApproval,status:'pending',docId:null,doneBy:null,doneAt:null,decidedBy:null,decidedAt:null,note:null}));
-  const inst={id:uid('obi'),templateId:tpl.id,userId,status:'active',steps,createdBy:S.uid,createdAt:new Date().toISOString(),completedAt:null};
-  if(!Array.isArray(DB.sopInstances))DB.sopInstances=[];
-  DB.sopInstances.push(inst);
-  saveDB();_saveSopInstance(inst);
-  _hrmNotify(userId,'📋 You\'ve been assigned the SOP "'+tpl.name+'" — '+steps.length+' step'+(steps.length===1?'':'s')+' to complete.','sop','dashboard');
-  hlog('SOP assigned',fullName(u)+' · '+tpl.name);
-  closeModal();toast('SOP assigned');rr();
-};
-
-// ── Assignee completes an assigned (non-approval) step → done; approval step → submitted ──
-App._sopStepComplete=(instId,stepId)=>{
-  const inst=(DB.sopInstances||[]).find(i=>i.id===instId);if(!inst){toast('Not found','err');return;}
-  const step=(inst.steps||[]).find(s=>s.id===stepId);if(!step){toast('Step not found','err');return;}
-  // who may complete: the assignee (own instance) or an elevated user managing it
-  const isHire=inst.userId===S.uid;
-  if(!isHire&&!(can('sops','manage')&&(scopeFilter('sops')(inst.userId)||isAdmin()))){toast('Not permitted','err');return;}
-  if(step.status!=='pending'&&step.status!=='rejected'){rr();return;}
-  // document step: capture an optional note/reference (MVP — minimal, functional)
-  if(step.kind==='document'&&!step._noteCaptured){
-    modalShell({title:step.title,size:'max-w-sm',
-      body:(step.content?'<div style="font-size:12px;color:var(--c-text-2);margin-bottom:8px;white-space:pre-wrap">'+esc(step.content)+'</div>':'')
-      +'<div style="font-size:12px;color:var(--c-text-2);margin-bottom:8px">Attach a reference or note for this document step.</div>'
-      +'<textarea id="ob-docnote" rows="3" class="ui-input rf" placeholder="Link / note (optional)"></textarea>',
-      footer:btnG('Cancel','App.closeModal()')+btnP('Submit','App._sopStepCompleteDo(\''+esc(instId)+'\',\''+esc(stepId)+'\',(document.getElementById(\'ob-docnote\')?.value||\'\').trim())')});
-    return;
-  }
-  App._sopStepCompleteDo(instId,stepId,'');
-};
-App._sopStepCompleteDo=(instId,stepId,note)=>{
-  const inst=(DB.sopInstances||[]).find(i=>i.id===instId);if(!inst){toast('Not found','err');return;}
-  const step=(inst.steps||[]).find(s=>s.id===stepId);if(!step){toast('Step not found','err');return;}
-  const isHire=inst.userId===S.uid;
-  if(!isHire&&!(can('sops','manage')&&(scopeFilter('sops')(inst.userId)||isAdmin()))){toast('Not permitted','err');return;}
-  if(step.status!=='pending'&&step.status!=='rejected'){closeModal();rr();return;}
-  if(note)step.note=note;
-  step.doneBy=S.uid;step.doneAt=new Date().toISOString();
-  if(step.requiresApproval){
-    step.status='submitted';
-    // notify approvers (HR/Admin + the assignee's manager who can approve SOPs)
-    const pool=DB.users.filter(a=>a.status==='Active'&&a.id!==inst.userId&&_canApproveSopAs(a)&&_canApproverSeeHire(a,inst.userId));
-    pool.forEach(a=>_hrmNotify(a.id,'📋 '+fullName(uById(inst.userId))+' submitted "'+step.title+'" for approval.','sop'));
-  }else{
-    step.status='done';
-  }
-  _checkSopComplete(inst);
-  saveDB();_saveSopInstance(inst);
-  closeModal();toast(step.status==='submitted'?'Submitted for approval':'Marked done');rr();
-};
-
-// Can user `a` approve SOP steps? (mirror _canApproveDocAs for an arbitrary user)
-function _canApproveSopAs(u){
-  if(!u)return false;
-  if(u.role==='Admin')return true;
-  if(u.hrm?.isHR)return true; // HR floor
-  const pid=u.hrm?.roleProfileId;const p=pid?(DB.roleProfiles?.[pid]||null):null;
-  if(p){const a=p.perms?.sops;return !!(a&&a.actions&&a.actions.approve);}
-  return false;
-}
-// Conservative scope: an approver who is HR/Admin sees all assignees; a plain manager-approver only their subtree.
-function _canApproverSeeHire(approver,hireId){
-  if(!approver)return false;
-  if(approver.role==='Admin'||approver.role==='SubAdmin'||approver.hrm?.isHR)return true;
-  return subTree(approver.id).some(u=>u.id===hireId);
-}
-
-// ── Decide an approval step (HR/Admin/manager with sops.approve, not the assignee) ──
-App._decideSopStep=(instId,stepId,action)=>{
-  if(!can('sops','approve')){toast('Not permitted','err');return;}
-  const inst=(DB.sopInstances||[]).find(i=>i.id===instId);if(!inst){toast('Not found','err');return;}
-  const step=(inst.steps||[]).find(s=>s.id===stepId);if(!step){toast('Step not found','err');return;}
-  if(inst.userId===S.uid){toast('You cannot approve your own SOP','err');return;}
-  if(!(scopeFilter('sops')(inst.userId)||isAdmin()||(isHR()))){toast('Out of scope','err');return;}
-  if(step.status!=='submitted'){toast('Already decided','warn');rr();return;}
-  step.status=action==='approve'?'approved':'rejected';
-  step.decidedBy=S.uid;step.decidedAt=new Date().toISOString();
-  _checkSopComplete(inst);
-  saveDB();_saveSopInstance(inst);
-  _hrmNotify(inst.userId,(action==='approve'?'✅ ':'❌ ')+'SOP step "'+step.title+'" was '+step.status+'.','sop','dashboard');
-  hlog('SOP step '+step.status,fullName(uById(inst.userId))+' · '+step.title);
-  closeModal();toast(action==='approve'?'Approved':'Rejected');rr();
-};
-// Inbox forwarder — parses 'ob-<instId>-<stepId>' (stepId carries the obs_ prefix the inbox encodes).
-App._inboxDecideSop=(iid,action)=>{
-  const m=iid.match(/^ob-(.+?)-(obs_.+)$/);
-  if(!m){toast('Bad SOP id','err');return;}
-  App._decideSopStep(m[1],m[2],action);
-};
-
-// ── A small progress bar for an instance ──
-function _sopProgressBar(inst){
-  const{done,total}=_sopProgress(inst);
-  const pct=total?Math.round(done/total*100):0;
-  return '<div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:7px;border-radius:4px;background:#ECEDF0;overflow:hidden"><div style="height:100%;border-radius:4px;width:'+pct+'%;background:'+(pct>=100?'#0E9F6E':pct>=50?'#F59E0B':'#3B82F6')+'"></div></div><span style="font-size:12px;font-weight:700;color:#374151;white-space:nowrap">'+done+'/'+total+' steps done</span></div>';
-}
-const _OB_ASG={employee:'Assignee',hr:'HR',manager:'Manager'};
-const _OB_STEP_CHIP={pending:'Pending',submitted:'Submitted',approved:'Approved',rejected:'Rejected',done:'Approved'};
-// One assigned-SOP instance rendered as a step list. `actor` decides which complete/decide buttons appear.
-function _sopInstanceCard(inst,opts){
-  opts=opts||{};
-  const hire=uById(inst.userId);
-  const tpl=inst.templateId?(DB.sopTemplates||[]).find(t=>t.id===inst.templateId):null;
-  const title=tpl?tpl.name:'SOP';
-  const canManage=can('sops','manage')&&(scopeFilter('sops')(inst.userId)||isAdmin()||isHR());
-  const canApprove=can('sops','approve')&&inst.userId!==S.uid&&(scopeFilter('sops')(inst.userId)||isAdmin()||isHR());
-  const isHire=inst.userId===S.uid;
-  const rows=(inst.steps||[]).map(s=>{
-    const stLabel=_OB_STEP_CHIP[s.status]||'Pending';
-    // assignee can act on their own pending/rejected steps assigned to 'employee'; managers can complete others
-    const hireCan=isHire&&s.assignee==='employee'&&(s.status==='pending'||s.status==='rejected');
-    const mgrCan=!isHire&&canManage&&(s.status==='pending'||s.status==='rejected');
-    const approverCan=canApprove&&s.status==='submitted'&&s.requiresApproval;
-    let btns='';
-    if(hireCan||mgrCan)btns=btn((s.kind==='document'?'Attach':(s.requiresApproval?'Submit':'Mark done')),'App._sopStepComplete(\''+esc(inst.id)+'\',\''+esc(s.id)+'\')',{variant:'primary',size:'sm'});
-    if(approverCan)btns=btn('Approve','App._decideSopStep(\''+esc(inst.id)+'\',\''+esc(s.id)+'\',\'approve\')',{variant:'brand',size:'sm'})+btn('Reject','App._decideSopStep(\''+esc(inst.id)+'\',\''+esc(s.id)+'\',\'reject\')',{variant:'danger',size:'sm',attrs:'style="margin-left:6px"'});
-    return '<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #F3F4F6">'
-      +'<span style="display:grid;place-items:center;color:#9CA3AF">'+(s.kind==='document'?ic('paperclip','w-4 h-4'):'')+'</span>'
-      +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:#111">'+esc(s.title)+'</div>'
-      +'<div style="font-size:11px;color:#9CA3AF">'+esc(_OB_ASG[s.assignee]||s.assignee)+(s.requiresApproval?' · needs approval':'')+(s.note?' · '+esc(s.note):'')+'</div></div>'
-      +chip(stLabel)+(btns?'<div style="flex-shrink:0">'+btns+'</div>':'')+'</div>';
-  }).join('');
-  return '<div class="bg-white rounded-2xl border border-ink-100 shadow-soft" style="padding:16px;margin-bottom:12px">'
-    +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'+(opts.showHire!==false?avatar(hire,'w-9 h-9','text-xs')+'<div style="flex:1"><div style="font-weight:700;font-size:14px">'+esc(fullName(hire))+'</div><div style="font-size:11px;color:#9CA3AF">'+esc(title)+(hire?.department?' · '+esc(hire.department):'')+'</div></div>':'<div style="flex:1"><div style="font-weight:700;font-size:14px">'+esc(title)+'</div><div style="font-size:11px;color:#9CA3AF">Assigned to you</div></div>')
-    +chip(inst.status==='completed'?'Approved':'Active')+'</div>'
-    +_sopProgressBar(inst)
-    +'<div style="margin-top:6px">'+rows+'</div></div>';
-}
-// Read-only library view of a single SOP: content body + steps (the knowledge-base side).
-App._sopRead=(id)=>{
-  const t=(DB.sopTemplates||[]).find(x=>x.id===id);if(!t){toast('SOP not found','err');return;}
-  const steps=(t.steps||[]).map((s,i)=>'<div style="display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--c-border)">'
-    +'<span style="font-size:12px;font-weight:700;color:var(--c-text-3);width:18px">'+(i+1)+'</span>'
-    +'<div style="flex:1"><div style="font-size:13px;font-weight:600;color:var(--c-text)">'+esc(s.title)+'</div>'
-    +(s.content?'<div style="font-size:12px;color:var(--c-text-2);margin-top:2px;white-space:pre-wrap">'+esc(s.content)+'</div>':'')
-    +'<div style="font-size:11px;color:var(--c-text-3);margin-top:2px">'+(s.kind==='document'?'Document':'Task')+' · '+esc(_OB_ASG[s.assignee]||s.assignee)+(s.requiresApproval?' · needs approval':'')+'</div></div></div>').join('');
-  const canManage=can('sops','manage');
-  modalShell({title:t.name,sub:t.category||'',size:'max-w-lg',
-    body:(t.description?'<div style="font-size:13px;color:var(--c-text);margin-bottom:8px">'+esc(t.description)+'</div>':'')
-    +(t.content?'<div style="font-size:13px;color:var(--c-text);background:var(--c-surface-2);border:1px solid var(--c-border);border-radius:10px;padding:12px;white-space:pre-wrap;line-height:1.5;margin-bottom:10px">'+esc(t.content)+'</div>':'')
-    +'<p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--c-text-3);margin-bottom:2px">Steps</p>'+(steps||'<p style="font-size:12px;color:var(--c-text-3)">No steps.</p>'),
-    footer:canManage?btnG('Edit','App.closeModal();App._sopTplEditor(\''+esc(t.id)+'\')'):''});
-};
-// SOPs page: Library (browse by category + read), People (assigned-SOP progress), Authoring (HR list/edit).
-function sopsPage(){
-  const canManage=can('sops','manage');
-  const sub=S.filters.soptab||'Library';
-  let body='';
-  if(sub==='Library'){
-    // browse the SOP library grouped BY CATEGORY; each card opens the read view.
-    const tpls=(DB.sopTemplates||[]).filter(t=>t.active!==false);
-    if(!tpls.length){body=empty('list','No SOPs yet',canManage?'Author your first SOP.':'No procedures published yet.');}
-    else{
-      const byCat={};tpls.forEach(t=>{const c=(t.category||'').trim()||'Uncategorised';(byCat[c]=byCat[c]||[]).push(t);});
-      const cats=Object.keys(byCat).sort((a,b)=>a.localeCompare(b));
-      body=cats.map(c=>'<div style="margin-bottom:22px"><div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--c-text-3);margin-bottom:10px">'+esc(c)+'</div>'
-        +'<div style="display:flex;flex-direction:column;gap:10px">'+byCat[c].map(t=>'<div onclick="App._sopRead(\''+esc(t.id)+'\')" class="ui-card" style="padding:15px;display:flex;align-items:center;gap:12px;cursor:pointer">'
-        +'<span style="width:42px;height:42px;border-radius:12px;background:var(--c-brand-soft);color:var(--c-brand-ink);display:grid;place-items:center;flex-shrink:0">'+ic('list','w-5 h-5')+'</span>'
-        +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14.5px">'+esc(t.name)+'</div><div style="font-size:12.5px;color:var(--c-text-2);margin-top:2px">'+(t.steps||[]).length+' step'+((t.steps||[]).length===1?'':'s')+(t.description?' · '+esc(t.description):'')+'</div></div>'
-        +(canManage?'<button class="ui-btn ui-btn-ghost ui-btn-sm" onclick="event.stopPropagation();App._sopTplEditor(\''+esc(t.id)+'\')">Edit</button><button class="ui-btn ui-btn-ghost ui-btn-sm" style="color:var(--c-danger-ink)" onclick="event.stopPropagation();App._sopTplDel(\''+esc(t.id)+'\')">Delete</button>':ic('chevR','w-4 h-4'))
-        +'</div>').join('')+'</div></div>').join('');
-    }
-  }else{
-    // People: assigned-SOP instances in scope (HR/Admin all; managers their subtree)
-    let insts=(DB.sopInstances||[]).filter(i=>i.userId===S.uid||scopeFilter('sops')(i.userId)||isAdmin()||isHR());
-    insts=insts.slice().sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-    body=(insts.length?insts.map(i=>_sopInstanceCard(i,{})).join('')
-      :empty('users','No assigned SOPs',canManage?'Assign one from a user record (Users → Assign SOP).':'No one in your scope has an assigned SOP yet.'));
-  }
-  const newBtn=canManage?btnP('New SOP','App._sopTplEditor()','plus'):'';
-  return '<div class="fade">'+hdr('SOPs',canManage?'Library, authoring & assigned progress':'Standard Operating Procedures',newBtn)
-    +'<div style="margin-bottom:16px">'+chipBar([['Library','Library'],['People','People']],sub,'App._sopSetTab')+'</div>'
-    +body+'</div>';
-}
-App._sopSetTab=(t)=>{S.filters.soptab=t;rr();};
 App._setSTab=(t)=>{S.filters.stab=t;rr();};
 App._setCfgTab=(t)=>{S.filters.cfgtab=t;rr();};
-// Employee dashboard card: the assignee's own active assigned SOP(s) (if any). Onboarding shows here too.
-function _mySopCard(){
-  const mine=(DB.sopInstances||[]).filter(i=>i.userId===S.uid&&i.status!=='cancelled');
-  if(!mine.length)return '';
-  const active=mine.filter(i=>i.status==='active');
-  const list=(active.length?active:[mine[mine.length-1]]);
-  return '<div style="margin-bottom:16px">'+list.map(i=>_sopInstanceCard(i,{showHire:false})).join('')+'</div>';
-}
-
-/* ═══════════════ end SOPs ═══════════════ */
 
 // W1.3/X5: replace blocking confirm() with a styled confirm dialog, then an optimistic delete with a
 // toast-with-Undo (5s). The underlying delete still happens via _delDoc (id preserved for the tests);
@@ -8161,69 +7789,6 @@ function mySchedulePage(){
   </div>`;
 }
 
-/* ═══════════════ EXPENSE CLAIMS — employee page + submit modal (mirrors the leave employee flow) ═══════════════ */
-const _EXP_CATS=['Travel','Meals','Supplies','Other'];
-// Default claim currency: a sensible single workspace default (no per-workspace currency exists yet).
-function _defaultCurrency(){return 'USD';}
-// Employee Expenses page: submit a claim + see MY OWN claims with status badges + decision notes. An
-//   approver's team view lives in the unified Approvals inbox (a banner points there).
-function expensesPage(){
-  const u=me();
-  const mine=(DB.expenses||[]).filter(e=>e.userId===S.uid).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-  const apprBanner=can('expenses','approve')
-    ?`<div onclick="App.go('approvals')" style="display:flex;align-items:center;gap:10px;margin-bottom:18px;padding:13px 16px;border-radius:var(--r-md);background:var(--c-warn-soft);border:1px solid #FCD9A8;color:var(--c-warn-ink);font-size:13.5px;font-weight:600;cursor:pointer">${ic('approve','w-[18px] h-[18px]')}<span style="flex:1">Approve team expense claims in the Approvals inbox</span>${ic('chevR','w-4 h-4')}</div>`
-    :'';
-  const list=mine.length?mine.map(e=>{const tone=e.status==='approved'?'success':e.status==='rejected'?'danger':'warn';const lbl=e.status==='pending'?'Pending':e.status==='approved'?'Approved':'Rejected';
-    return `<div class="ui-card" style="padding:16px;margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;align-items:start;gap:10px">
-        <div><div style="font-size:14.5px;font-weight:700">${esc(_fmtMoney(e.amount,e.currency))} <span style="font-size:12.5px;color:var(--c-text-2);font-weight:600">· ${esc(e.category||'Other')}</span></div>
-        <div style="font-size:12.5px;color:var(--c-text-2);margin-top:3px">${fmtD(e.date)}</div></div>${badge(lbl,tone)}</div>
-      ${e.description?`<div style="font-size:12.5px;color:var(--c-text-2);margin-top:8px">${esc(e.description)}</div>`:''}
-      ${e.receiptNote?`<div style="font-size:12px;color:var(--c-text-3);margin-top:6px">Receipt: ${esc(e.receiptNote)}</div>`:''}
-      ${(e.status!=='pending'&&e.decisionNote)?`<div style="font-size:12px;font-weight:600;color:${e.status==='rejected'?'var(--c-danger-ink)':'var(--c-text-2)'};margin-top:8px;background:var(--c-surface-2);border-radius:8px;padding:8px">${e.status==='rejected'?'Rejected':'Note'}: ${esc(e.decisionNote)}</div>`:''}
-    </div>`;}).join(''):emptyCTA('msg','No expense claims','Submit a reimbursement claim and track its approval here.','Submit claim','App.applyExpense()');
-  return `<div class="fade">${hdr('Expenses','Submit reimbursement claims and track their approval',btnP('Submit claim','App.applyExpense()','plus'))}${apprBanner}
-    <div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">My claims</div>${list}</div>`;
-}
-// Submit-claim modal: date, category, amount, currency, description, receipt note (mirrors applyLeave).
-App.applyExpense=()=>{
-  const u=me();if(!u)return;
-  openModal(`<div style="padding:20px"><div class="flex justify-between items-start mb-5"><h2 class="fd" style="font-size:18px;font-weight:800">Submit expense claim</h2><button onclick="App.closeModal()" aria-label="Close" style="width:34px;height:34px;border-radius:10px;border:none;background:var(--c-surface-2);color:var(--c-text-2);cursor:pointer;display:grid;place-items:center">${ic('x','w-4 h-4')}</button></div>
-    <div class="space-y-3">
-      ${fld('Date','exp-date',todayISO(),'date')}
-      ${selF('Category','exp-cat',_EXP_CATS,'Travel')}
-      <div class="grid grid-cols-2 gap-3">${fld('Amount','exp-amount','','number','0.00')}${fld('Currency','exp-cur',_defaultCurrency(),'text','USD')}</div>
-      <div><label for="exp-desc" class="ui-label">Description</label><textarea id="exp-desc" rows="2" class="ui-input rf" placeholder="What was this for?"></textarea></div>
-      ${fld('Receipt note / filename','exp-rcpt','','text','e.g. taxi-receipt.jpg')}
-    </div>
-    <div class="flex gap-2 mt-6"><button onclick="App.closeModal()" class="ui-btn ui-btn-ghost ui-btn-md" style="flex:1">Cancel</button><button onclick="App.submitExpense()" class="ui-btn ui-btn-brand ui-btn-md" style="flex:1">Submit claim</button></div>
-  </div>`);
-  const de=$('#exp-date');if(de)de.max=todayISO();
-};
-// Create the claim (status 'pending'). Picks a default approver = the submitter's manager (informational).
-App.submitExpense=()=>{
-  const u=me();if(!u)return;
-  const date=$('#exp-date')?.value||todayISO();
-  const category=$('#exp-cat')?.value||'Other';
-  const amount=Math.round((parseFloat($('#exp-amount')?.value||'0')||0)*100)/100;
-  const currency=(($('#exp-cur')?.value||_defaultCurrency()).trim()||_defaultCurrency()).toUpperCase().slice(0,8);
-  const description=($('#exp-desc')?.value||'').trim();
-  const receiptNote=($('#exp-rcpt')?.value||'').trim();
-  if(!date){toast('Pick a date','err');return;}
-  if(date>todayISO()){toast('The expense date cannot be in the future','err');return;}
-  if(!(amount>0)){toast('Enter an amount greater than zero','err');return;}
-  const e={id:uid('exp'),userId:u.id,date,category,amount,currency,description,receiptNote,
-    status:'pending',approverId:u.managerId||null,decidedBy:null,decidedAt:null,decisionNote:null,
-    createdAt:new Date().toISOString()};
-  (DB.expenses=DB.expenses||[]).unshift(e);
-  saveDB();
-  if(typeof sb!=='undefined'&&sb)sb.from('expenses').upsert([{id:e.id,user_id:e.userId,date:e.date,category:e.category,amount:e.amount,currency:e.currency,description:e.description,receipt_note:e.receiptNote,status:e.status,approver_id:e.approverId,decided_by:null,decided_at:null,decision_note:null,created_at:e.createdAt}],{onConflict:'id'})
-    .then(({error})=>{if(error)_syncErr('expense submit')(error);}).catch(_syncErr('expense submit'));
-  // notify a designated approver (manager) that a claim awaits — informational, routes to Approvals.
-  if(e.approverId&&e.approverId!==u.id)_hrmNotify(e.approverId,'🧾 '+fullName(u)+' submitted an expense claim '+_fmtMoney(e.amount,e.currency)+' ('+e.category+') — your approval needed','expense','approvals');
-  hlog('Expense submitted',_fmtMoney(e.amount,e.currency)+' · '+e.category);
-  closeModal();toast('Claim submitted');rr();
-};
 // Add/edit a shift (managers/HR). id present = edit existing; absent = create for (userId,date).
 App.schAddShift=(userId,date,id)=>{
   if(!can('scheduling','manage')){toast('You cannot edit the roster','err');return;}
@@ -8576,53 +8141,9 @@ function _approvalInbox(){
       _src:{coll:'documents',id:d.id}
     });
   });
-  // (d) SOP approvals — only requiresApproval steps of an assigned SOP that have been SUBMITTED (or
-  //     decided) enter the inbox. Visible to approvers in scope (HR/Admin all; a plain manager-approver
-  //     only their subtree), never to the assignee. Decided rows surface to the same pool.
-  const _canApprSop=can('sops','approve');
-  (DB.sopInstances||[]).forEach(inst=>{
-    const hire=uById(inst.userId);if(!hire)return;
-    (inst.steps||[]).forEach(step=>{
-      if(!step.requiresApproval)return;
-      if(step.status!=='submitted'&&step.status!=='approved'&&step.status!=='rejected')return;
-      const st=step.status==='submitted'?'Pending':step.status==='approved'?'Approved':'Rejected';
-      const inScope=isAdmin()||isHR()||scopeFilter('sops')(inst.userId);
-      const isApprover=_canApprSop&&inst.userId!==S.uid&&inScope;
-      if(!isApprover)return; // assignee / out-of-scope users never see SOP approval rows
-      items.push({
-        id:'ob-'+inst.id+'-'+step.id, type:'sop', requestedBy:inst.userId, assignedTo:null,
-        subject:fullName(hire)+' — SOP: '+step.title,
-        payload:{...step,instId:inst.id,createdAt:inst.createdAt}, status:st,
-        decidedBy:step.decidedBy||null, decidedAt:step.decidedAt||null,
-        location:hire.hrm?.locationId||'', dept:hire.department||'',
-        _src:{coll:'sop_instances',id:inst.id,stepId:step.id}
-      });
-    });
-  });
-  // (e) EXPENSE claims — pending claims enter the inbox for approvers in scope (HR/Admin all; a plain
-  //     approver only their subtree), never the submitter. Decided rows surface to the same approver pool
-  //     plus the submitter (read-only). Mirrors the DOCUMENT mapper above.
-  const _canApprExp=can('expenses','approve');
-  (DB.expenses||[]).forEach(e=>{
-    const emp=uById(e.userId);if(!emp)return;
-    const st=e.status==='approved'?'Approved':e.status==='rejected'?'Rejected':'Pending';
-    const inScope=isAdmin()||isHR()||scopeFilter('employees')(e.userId);
-    const isApprover=_canApprExp&&e.userId!==S.uid&&inScope;
-    if(st==='Pending'){if(!isApprover)return;}            // pending → approvers only
-    else{if(!isApprover&&e.userId!==S.uid)return;}         // decided → approver pool + the submitter
-    items.push({
-      id:'exp-'+e.id, type:'expense', requestedBy:e.userId, assignedTo:e.approverId||null,
-      subject:fullName(emp)+' — '+_fmtMoney(e.amount,e.currency)+': '+(e.category||'Other'),
-      payload:{...e,createdAt:e.createdAt}, status:st,
-      decidedBy:e.decidedBy||null, decidedAt:e.decidedAt||null,
-      location:emp.hrm?.locationId||'', dept:emp.department||'',
-      _src:{coll:'expenses',id:e.id}
-    });
-  });
+  // (SOP and Expense approval mappers removed — those features were retired.)
   return items;
 }
-// Format an expense amount + currency for subjects/detail (e.g. "120.50 USD"). Keeps it ASCII-safe.
-function _fmtMoney(amount,currency){const n=Number(amount)||0;return n.toFixed(2)+' '+(currency||'USD');}
 // Single number for the nav badge: every pending decision actionable by this user, all types.
 function _approvalPendingCount(){return _approvalInbox().filter(x=>x.status==='Pending').length;}
 // Which types currently have ANY item for this user (drives which filter chips render).
@@ -9564,20 +9085,6 @@ App.downloadPayroll=()=>{
   toast('Exported '+users.length+' staff');
 };
 
-/* ════════════════════════════════════════════════════════════════════════════
-   REPORTS & EXPORTS MODULE  (additive — no new DB tables; reads existing DB.*)
-   A single screen: pick a REPORT TYPE + date range + dept/location filter →
-   live preview table + summary stats + sanitized CSV export.
-
-   • Each report is a small builder _rpBuild_<type>(users,d1,d2) → {columns,rows}.
-   • CSV export reuses the SAME formula-injection guard as _exportCSV (line ~7409)
-     and downloadPayroll (line ~9469): cells beginning with = + - @ tab CR are
-     prefixed with a single quote so spreadsheet apps treat them as text. That
-     guard lives once in _csvDownload() below and the new exporter calls it.
-   • Scope honors the resolver's `reports` scope via scopedUsers('reports'),
-     exactly like hrmAnalyticsPage — HR/Admin see all, a manager only their team.
-   ════════════════════════════════════════════════════════════════════════════ */
-
 // Shared sanitized CSV writer — IDENTICAL guard to _exportCSV/downloadPayroll.
 // rows: array of arrays. filenamePrefix: e.g. 'shiftly_report_attendance'.
 function _csvDownload(rows,filenamePrefix){
@@ -9590,158 +9097,6 @@ function _csvDownload(rows,filenamePrefix){
   a.download=(filenamePrefix||'shiftly_report')+'_'+todayISO()+'.csv';
   a.click();
 }
-
-// Report-type registry (key → label). Add a type = add a builder + an entry here.
-const _RP_TYPES=[
-  ['attendance','Attendance summary'],
-  ['leave','Leave summary'],
-  ['expense','Expense summary'],
-  ['roster','Shift / roster summary'],
-  ['headcount','Headcount / roster'],
-];
-const _rpLabel=k=>(_RP_TYPES.find(t=>t[0]===k)||['',''])[1];
-
-// ── Resolve the scoped + filtered user set for a report (mirrors hrmAnalyticsPage). ──
-function _rpUsers(){
-  const f=S.filters;
-  let scope=scopedUsers('reports');
-  if(!scope.length||!scope.some(u=>u.id===S.uid))scope=[me(),...scope.filter(u=>u&&u.id!==S.uid)].filter(Boolean);
-  let users=scope.slice();
-  if(f.rpDept)users=users.filter(u=>u.department===f.rpDept);
-  if(f.rpLoc)users=users.filter(u=>(u.hrm?.locationId||'')===f.rpLoc);
-  return users;
-}
-
-// ── Report builders: each returns {columns:[...], rows:[[...]...]} ──
-// 1) Attendance summary — per employee over [d1,d2]
-function _rpBuild_attendance(users,d1,d2){
-  const columns=['Employee','Department','Days present','Total hours','Late','Early','Absences'];
-  const rows=users.map(u=>{
-    const att=(DB.attendance||[]).filter(a=>a.userId===u.id&&a.date>=d1&&a.date<=d2);
-    const present=att.filter(a=>a.clockIn||a.inMin!=null||(a.hours||0)>0).length;
-    const hours=_r2(att.reduce((s,a)=>s+(a.hours||0),0));
-    const late=att.filter(a=>(a.flags||[]).includes('late')).length;
-    const early=att.filter(a=>(a.flags||[]).includes('early')||(a.flags||[]).includes('early-leave')).length;
-    const absences=_deriveAbsences(u,d1,d2);
-    return [fullName(u),u.department||'',present,hours,late,early,absences];
-  });
-  return {columns,rows};
-}
-// 2) Leave summary — per employee: taken (by all types, clipped to range), remaining, pending
-function _rpBuild_leave(users,d1,d2){
-  const columns=['Employee','Department','Leave taken (days)','Pending (days)','Balance remaining (days)'];
-  const rows=users.map(u=>{
-    const reqs=(DB.leaveRequests||[]).filter(r=>r.userId===u.id&&!(r.end<d1||r.start>d2));
-    const taken=_r2(reqs.filter(r=>r.status==='Approved').reduce((s,r)=>s+_leaveDaysInRange(r,d1,d2),0));
-    const pending=_r2(reqs.filter(r=>r.status==='Pending').reduce((s,r)=>s+(r.workingDays||0),0));
-    const remaining=_r2(_typesFor(userProfileId(u)).filter(t=>t.enabled).reduce((s,t)=>s+_ltRemaining(u.id,t,_leaveYearOf(u,todayISO())),0));
-    return [fullName(u),u.department||'',taken,pending,remaining];
-  });
-  return {columns,rows};
-}
-// 3) Expense summary — per employee: claimed/approved/pending/rejected totals over range
-function _rpBuild_expense(users,d1,d2){
-  const columns=['Employee','Department','Claims','Total claimed','Approved','Pending','Rejected'];
-  const rows=users.map(u=>{
-    const ex=(DB.expenses||[]).filter(e=>e.userId===u.id&&e.date>=d1&&e.date<=d2);
-    const sum=st=>_r2(ex.filter(e=>!st||(e.status||'pending')===st).reduce((s,e)=>s+(Number(e.amount)||0),0));
-    return [fullName(u),u.department||'',ex.length,sum(''),sum('approved'),sum('pending'),sum('rejected')];
-  });
-  return {columns,rows};
-}
-// 4) Shift / roster summary — per employee: scheduled shifts + hours over range
-function _rpBuild_roster(users,d1,d2){
-  const columns=['Employee','Department','Scheduled shifts','Scheduled hours','Published'];
-  const rows=users.map(u=>{
-    const sh=(DB.shifts||[]).filter(s=>s.userId===u.id&&s.date>=d1&&s.date<=d2);
-    const hours=_r2(sh.reduce((s,x)=>{const dur=(hm2m(x.end)-hm2m(x.start))/60;return s+(dur>0?dur:0);},0));
-    const pub=sh.filter(s=>s.status==='published').length;
-    return [fullName(u),u.department||'',sh.length,hours,pub];
-  });
-  return {columns,rows};
-}
-// 5) Headcount / roster — active employees by dept/location, with role + manager
-function _rpBuild_headcount(users){
-  const columns=['Employee','Department','Location','Role','Manager','Status'];
-  const roleLbl=u=>u.role==='Admin'?'Super Admin':u.role==='SubAdmin'?'Admin':(subTree(u.id).length>0?'Manager':'User');
-  const rows=users.map(u=>{
-    const loc=u.hrm?.locationId?(locById(u.hrm.locationId)?.name||''):'';
-    const mgr=u.managerId?fullName(uById(u.managerId)):'';
-    return [fullName(u),u.department||'',loc,roleLbl(u),mgr,u.status||'Active'];
-  });
-  return {columns,rows};
-}
-// Dispatch by type → {columns,rows}
-function _rpBuild(type,users,d1,d2){
-  switch(type){
-    case 'leave':return _rpBuild_leave(users,d1,d2);
-    case 'expense':return _rpBuild_expense(users,d1,d2);
-    case 'roster':return _rpBuild_roster(users,d1,d2);
-    case 'headcount':return _rpBuild_headcount(users,d1,d2);
-    case 'attendance':default:return _rpBuild_attendance(users,d1,d2);
-  }
-}
-
-// ── Summary stat row per report type (header-level totals) ──
-function _rpStats(type,build){
-  const rows=build.rows,cols=build.columns;
-  const numAt=name=>{const i=cols.indexOf(name);return i<0?0:_r2(rows.reduce((s,r)=>s+(Number(r[i])||0),0));};
-  const cards=[statCard('Employees',rows.length,'sky')];
-  if(type==='attendance'){cards.push(statCard('Days present',numAt('Days present'),'brand'),statCard('Total hours',numAt('Total hours'),'emerald'),statCard('Late check-ins',numAt('Late'),'amber'));}
-  else if(type==='leave'){cards.push(statCard('Leave taken',numAt('Leave taken (days)'),'brand'),statCard('Pending',numAt('Pending (days)'),'amber'),statCard('Balance left',numAt('Balance remaining (days)'),'emerald'));}
-  else if(type==='expense'){cards.push(statCard('Total claimed',numAt('Total claimed'),'brand'),statCard('Approved',numAt('Approved'),'emerald'),statCard('Pending',numAt('Pending'),'amber'));}
-  else if(type==='roster'){cards.push(statCard('Scheduled shifts',numAt('Scheduled shifts'),'brand'),statCard('Scheduled hours',numAt('Scheduled hours'),'emerald'),statCard('Published',numAt('Published'),'sky'));}
-  else if(type==='headcount'){cards.push(statCard('Departments',new Set(rows.map(r=>r[1]).filter(Boolean)).size,'brand'),statCard('Locations',new Set(rows.map(r=>r[2]).filter(Boolean)).size,'emerald'),statCard('Managers',rows.filter(r=>r[3]==='Manager').length,'sky'));}
-  return `<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">${cards.join('')}</div>`;
-}
-
-// ── Reports page ──
-function reportsPage(){
-  if(!can('reports','view'))return empty('audit','Reports','You do not have access to reports.');
-  const f=S.filters;
-  const type=f.rpType||'attendance';
-  const d1=f.rpD1||todayISO().slice(0,8)+'01';
-  const d2=f.rpD2||todayISO();
-  const users=_rpUsers();
-  const dateLess=type==='headcount'; // headcount is a point-in-time snapshot
-  const build=_rpBuild(type,users,d1,d2);
-  const canDl=can('reports','download')||isMgr()||isHR(); // managers/HR can export their scoped rows
-  const scopeNote=isAdmin()?'all staff':isHR()?'all staff (except Super Admins)':isMgr()?'your team':'you';
-
-  const typeBar=chipBar(_RP_TYPES,type,'App._rpType',{style:'pill'});
-  const filterBar=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin:14px 0 18px">
-    ${dateLess?'':`<div><label class="ui-label">From</label><input type="date" value="${d1}" onchange="S.filters.rpD1=this.value;rr()" class="ui-input rf" style="width:auto"/></div>
-    <div><label class="ui-label">To</label><input type="date" value="${d2}" onchange="S.filters.rpD2=this.value;rr()" class="ui-input rf" style="width:auto"/></div>`}
-    <div><label class="ui-label">Department</label><select onchange="S.filters.rpDept=this.value;rr()" class="ui-select rf" style="width:auto"><option value="">All departments</option>${DB.departments.map(d=>`<option${f.rpDept===d.name?' selected':''}>${esc(d.name)}</option>`).join('')}</select></div>
-    <div><label class="ui-label">Location</label><select onchange="S.filters.rpLoc=this.value;rr()" class="ui-select rf" style="width:auto"><option value="">All locations</option>${DB.locations.map(l=>`<option value="${l.id}"${f.rpLoc===l.id?' selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
-    <div style="display:flex;gap:8px;margin-left:auto">
-      ${canDl?btnP('Download CSV','App._rpExport()','download'):''}
-      ${btnG('Print','window.print()','')}
-    </div>
-  </div>`;
-
-  const th='<th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap">';
-  const head=build.columns.map((c,i)=>`${th}${esc(c)}</th>`).join('');
-  const body=build.rows.length?build.rows.map(r=>`<tr style="border-bottom:1px solid var(--c-border)">${r.map((cell,i)=>`<td class="px-4 py-2.5" style="font-size:13px;color:var(--c-text)${i===0?';font-weight:600':''}">${esc(cell)}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${build.columns.length}">${empty('audit','No data','Adjust the report type, date range, or filters.')}</td></tr>`;
-  const table=`<div style="background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm);overflow:hidden"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="w-full" style="border-collapse:collapse"><thead><tr style="border-bottom:1px solid var(--c-border);text-align:left">${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
-
-  return `<div class="fade rp-print">${hdr('Reports & Exports','Pick a report, set a date range, preview and export ('+scopeNote+')')}${typeBar}${filterBar}${_rpStats(type,build)}${table}</div>`;
-}
-App._rpType=(k)=>{S.filters.rpType=k;rr();};
-App._rpExport=()=>{
-  if(!(can('reports','download')||isMgr()||isHR())){toast('No download permission','err');return;}
-  const f=S.filters;
-  const type=f.rpType||'attendance';
-  const d1=f.rpD1||todayISO().slice(0,8)+'01',d2=f.rpD2||todayISO();
-  const users=_rpUsers();
-  const build=_rpBuild(type,users,d1,d2);
-  const period=type==='headcount'?todayISO():(d1+' to '+d2);
-  const meta=[[_rpLabel(type)+' report'],['Period',period],['Generated',new Date().toLocaleString('en-GB')],[]];
-  const rows=[...meta,build.columns,...build.rows];
-  _csvDownload(rows,'shiftly_report_'+type);
-  hlog('Report exported',_rpLabel(type)+' · '+period+' ('+build.rows.length+' rows)');
-  toast('Exported '+build.rows.length+' rows');
-};
 
 </script>
 </body>
