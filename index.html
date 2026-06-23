@@ -4326,9 +4326,11 @@ function unifiedApprovalsPage(){
   const emptyMsg=statusTab==='Pending'?['approve','Nothing pending','You\'re all caught up.']
     :statusTab==='Approved'?['approve','No approved items','Approved requests will appear here.']
     :['x','No rejected items','Rejected requests will appear here.'];
+  // Never gate the whole page behind a blocking skeleton — leave requests are already loaded at boot,
+  //   and submission/edit approvals stream in via the lazy load (which re-renders on completion). This
+  //   guarantees the page can never get visually stuck on "Loading…" if a background fetch is slow.
   const body=rows.length?rows.map(_inboxRow).join('')
-    :(_isLoading('approvals')?loadingState('Loading approvals…')
-      :empty(emptyMsg[0],emptyMsg[1],emptyMsg[2]));
+    :empty(emptyMsg[0],emptyMsg[1],emptyMsg[2]);
   return '<div class="fade">'+hdr('Approvals','Every request to review, in one place')
     +statusBar+chips+bulkBar
     +'<div class="space-y-3">'+body+'</div></div>';
