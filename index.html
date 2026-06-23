@@ -681,6 +681,9 @@ let _tabLoading={};
 async function _lazyLoad(kind){
   if(!S.uid||document.visibilityState==='hidden'||_tabLoading[kind])return;
   _tabLoading[kind]=true;_syncBar(true);
+  // Safety net: never let a slow/hung request trap a tab on a loading skeleton forever.
+  //   After 9s, clear the flag and re-render so the page shows whatever data is already available.
+  const _loadTO=setTimeout(()=>{if(_tabLoading[kind]){_tabLoading[kind]=false;_syncBar(_anyLoading());try{rr();}catch(e){}}},9000);
   try{
     const c=_cutoff30ISO();
     if(kind==='tickets'){const{data,error}=await sb.from('tickets').select('*').gte('created_at',c).order('created_at',{ascending:false});if(error){console.error('[TK] lazy error:',error.message);}else _applyTickets(data);}
@@ -690,7 +693,7 @@ async function _lazyLoad(kind){
     else if(kind==='documents'){const r=await Promise.all([sb.from('documents').select('*').gte('uploaded_at',c).order('uploaded_at',{ascending:false}),sb.from('doc_folders').select('*').order('created_at',{ascending:false})]);if(!r[0].error)_applyDocuments(r[0].data);if(!r[1].error)_applyFolders(r[1].data);}
     saveDB();rr();
   }catch(e){console.warn('[lazyLoad]',kind,e.message);}
-  finally{_tabLoading[kind]=false;_syncBar(_anyLoading());}
+  finally{clearTimeout(_loadTO);_tabLoading[kind]=false;_syncBar(_anyLoading());}
 }
 async function _lazyLoadDate(view){
   if(!S.uid||document.visibilityState==='hidden')return;
@@ -1421,7 +1424,7 @@ const statCard=(t,v,c='sky',oc='')=>{
   }
   return '<div style="'+base+'">'+lbl+val+'</div>';
 };
-const empty=(i,t,s)=>`<div style="text-align:center;padding:52px 24px"><div style="width:52px;height:52px;border-radius:var(--r-lg);background:var(--c-surface-2);color:var(--c-text-3);display:grid;place-items:center;margin:0 auto 14px">${ic(i,'w-6 h-6')}</div><p class="fd" style="font-weight:700;color:var(--c-text-2);font-size:15px">${esc(t)}</p>${s?`<p style="font-size:13px;color:var(--c-text-3);margin-top:5px;max-width:340px;margin-left:auto;margin-right:auto">${esc(s)}</p>`:''}</div>`;
+const empty=(i,t,s)=>`<div style="text-align:center;padding:40px 24px"><div style="width:56px;height:56px;border-radius:var(--r-lg);background:var(--c-brand-soft);color:var(--c-brand-ink);display:grid;place-items:center;margin:0 auto 14px">${ic(i,'w-6 h-6')}</div><p class="fd" style="font-weight:700;color:var(--c-text);font-size:15.5px">${esc(t)}</p>${s?`<p style="font-size:13px;color:var(--c-text-3);margin-top:5px;max-width:340px;margin-left:auto;margin-right:auto;line-height:1.55">${esc(s)}</p>`:''}</div>`;
 const emptyState=empty;
 /* emptyCTA(icon,title,sub,ctaLabel,onclick) — X7: an empty state WITH a primary call-to-action.
    Use where the user can do something about the emptiness (e.g. "No leave yet → Apply for leave"). */
@@ -7642,29 +7645,25 @@ function _clockWidget(){
     if(!rec._remNotified){rec._remNotified=true;_hrmNotify(S.uid,'🔔 Don\'t forget to clock out — your shift ended at '+(sched.out||'18:00')+'.','attendance');saveDB();}
   }
   const nowTime=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-  let inner,accent='var(--c-brand)';
   // LV-2: a record that exists but has no actual clock-in (a pre-written Leave/HalfDay row) must still
   //   show the Clock In button so the worked (half-)day can be clocked.
   const _clockedIn=rec&&(rec.clockIn!=null||rec.inMin!=null);
-  const bigBtn=(label,onclick,variant)=>`<button onclick="${onclick}" class="ui-btn ui-btn-${variant}" style="width:100%;max-width:360px;font-size:16px;font-weight:700;padding:18px 28px;min-height:58px;border-radius:16px">${ic('clock','w-5 h-5')}${label}</button>`;
-  // Scheduling nicety: surface today's PUBLISHED roster shift (if any) above the clock-in button.
-  const _rosterShift=(typeof _todayShift==='function')?_todayShift(S.uid):null;
-  const _rosterLine=_rosterShift?`<div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--c-brand-ink);background:var(--c-brand-soft);padding:5px 12px;border-radius:var(--r-pill);margin-bottom:12px">${ic('clock','w-3.5 h-3.5')}Your shift today: ${esc(_rosterShift.start)}–${esc(_rosterShift.end)}</div>`:'';
+  const actBtn=(label,onclick,variant)=>`<button onclick="${onclick}" class="ui-btn ui-btn-${variant}" style="font-size:15px;font-weight:700;padding:14px 30px;min-height:52px;border-radius:14px;flex:1 1 200px;max-width:280px">${ic('clock','w-5 h-5')}${label}</button>`;
+  const tile=(ico,ibg,iink)=>`<div style="width:56px;height:56px;border-radius:16px;background:${ibg};color:${iink};display:grid;place-items:center;flex-shrink:0">${ic(ico,'w-7 h-7')}</div>`;
+  let left,right,accent='var(--c-brand)';
   if(!_clockedIn){
-    inner=`${_rosterLine}<div class="fd" style="font-size:34px;font-weight:800;letter-spacing:-1px;margin-bottom:2px">${nowTime}</div>
-    <p style="font-size:13px;color:var(--c-text-2);margin-bottom:18px">${rec&&rec.status==='HalfDay'?'Half-day leave — clock in for your worked half · ':''}Shift ${sched.in||'09:00'}–${sched.out||'18:00'} · ${sched.hours||9}h</p>
-    ${bigBtn('Clock In',"App.clockIn()",'brand')}`;
+    left=`${tile('clock','var(--c-brand-soft)','var(--c-brand-ink)')}<div style="min-width:0"><div class="fd" style="font-size:32px;font-weight:800;letter-spacing:-1px;line-height:1">${nowTime}</div><p style="font-size:13px;color:var(--c-text-2);margin-top:5px">${rec&&rec.status==='HalfDay'?'Half-day · ':''}Shift ${sched.in||'09:00'}–${sched.out||'18:00'} · ${sched.hours||9}h</p></div>`;
+    right=actBtn('Clock In',"App.clockIn()",'brand');
   }else if(!rec.clockOut){
     accent='var(--c-ink)';
-    inner=`<div style="display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--c-success-ink);background:var(--c-success-soft);padding:6px 14px;border-radius:var(--r-pill);margin-bottom:14px">${ic('clock','w-4 h-4')}On shift since ${_m2hm(rec.inMin)}${rec.flags.includes('late')?' · Late':''}</div>
-    <div class="fd" style="font-size:34px;font-weight:800;letter-spacing:-1px;margin-bottom:18px">${nowTime}</div>
-    ${bigBtn('Clock Out',"App.clockOut()",'primary')}`;
+    left=`${tile('clock','var(--c-success-soft)','var(--c-success-ink)')}<div style="min-width:0"><div class="fd" style="font-size:32px;font-weight:800;letter-spacing:-1px;line-height:1">${nowTime}</div><p style="font-size:13px;color:var(--c-text-2);margin-top:5px">On shift since <strong style="color:var(--c-text)">${_m2hm(rec.inMin)}</strong>${rec.flags.includes('late')?' · Late':''}</p></div>`;
+    right=actBtn('Clock Out',"App.clockOut()",'primary');
   }else{
-    inner=`<div style="width:56px;height:56px;border-radius:50%;background:var(--c-success-soft);color:var(--c-success);display:grid;place-items:center;margin:0 auto 12px">${ic('approve','w-7 h-7')}</div>
-    <div class="fd" style="font-size:17px;font-weight:800;color:var(--c-success-ink);margin-bottom:6px">Shift complete</div>
-    <div style="font-size:13.5px;color:var(--c-text-2)">${_m2hm(rec.inMin)} → ${_m2hm(rec.outMin)} · <strong style="color:var(--c-text)">${rec.hours}h</strong>${rec.autoClosed?' '+badge('Auto-closed','warn'):''}${rec.flags.includes('late')?' '+badge('Late in','danger'):''}${rec.flags.includes('early')?' '+badge('Early out','warn'):''}</div>`;
+    accent='var(--c-success)';
+    left=`${tile('approve','var(--c-success-soft)','var(--c-success)')}<div style="min-width:0"><div class="fd" style="font-size:19px;font-weight:800;color:var(--c-success-ink)">Shift complete</div><div style="font-size:13px;color:var(--c-text-2);margin-top:4px">${_m2hm(rec.inMin)} → ${_m2hm(rec.outMin)} · <strong style="color:var(--c-text)">${rec.hours}h</strong>${rec.autoClosed?' '+badge('Auto-closed','warn'):''}${rec.flags.includes('late')?' '+badge('Late in','danger'):''}${rec.flags.includes('early')?' '+badge('Early out','warn'):''}</div></div>`;
+    right='';
   }
-  return `<div class="ui-card" style="padding:28px 22px;text-align:center;margin-bottom:18px;display:flex;flex-direction:column;align-items:center;border-top:3px solid ${accent}">${inner}</div>`;
+  return `<div class="ui-card" style="padding:20px 24px;margin-bottom:18px;border-left:4px solid ${accent};display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap"><div style="display:flex;align-items:center;gap:18px;min-width:0;flex:1 1 240px">${left}</div>${right}</div>`;
 }
 
 
