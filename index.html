@@ -179,6 +179,42 @@ input,select,textarea{outline:none}
 
 @media(min-width:768px){#main-wrap{margin-left:224px!important}}
 
+/* ════════ ROBUST RESPONSIVE SHELL — independent of the Tailwind CDN ════════
+   The app shell's layout + show/hide relied on Tailwind utility classes (hidden,
+   md:hidden, md:flex, fixed, sticky, flex-col, z-*). The codebase already hand-rolls
+   Tailwind COLOR utilities (see .text-ink-*, .bg-brand-* above) because the CDN is
+   often unavailable (offline / file://) — but the STRUCTURAL + responsive classes were
+   never given fallbacks, so when the CDN is dead the sidebar loses its positioning and
+   the mobile chrome (hamburger, bell, mobile profile, bottom nav) leaks onto desktop.
+   These rules make the shell fully self-sufficient at the 768px breakpoint. */
+/* Sidebar — fully positioned here so it does not depend on Tailwind's fixed/inset/w-56. */
+.sidebar{position:fixed;top:0;bottom:0;left:0;width:224px;z-index:30;flex-direction:column;overflow-y:auto}
+/* Sticky topbar (sticky/top-0/z-20). */
+.topbar{position:sticky;top:0;z-index:20}
+/* Main column. */
+#main-wrap{display:flex;flex-direction:column}
+/* Bottom mobile nav (fixed/bottom-0/inset-x-0/z-30). */
+.mob-nav{position:fixed;bottom:0;left:0;right:0;z-index:30}
+@media(min-width:768px){
+  .sidebar{display:flex!important}        /* desktop: show the collapsible sidebar */
+  .md\:hidden,.mob-nav{display:none!important}  /* desktop: hide all mobile-only chrome */
+  .md\:inline{display:inline!important}    /* desktop: show the "Create" button label */
+  .md\:block{display:block!important}
+  .md\:flex{display:flex!important}
+}
+@media(max-width:767px){
+  .sidebar{display:none!important}         /* mobile: hide the sidebar, use bottom nav + More */
+  #main-wrap{margin-left:0!important}
+}
+/* Base utility fallbacks the shell/login rely on (Tailwind defines these; we replicate for
+   the offline/CDN-blocked case). Responsive show-variants above override .hidden where needed. */
+.hidden{display:none}
+.overflow-hidden{overflow:hidden}
+@media(min-width:1024px){
+  .lg\:flex{display:flex!important}        /* login: desktop split panel */
+  .lg\:hidden{display:none!important}      /* login: mobile-only brand */
+}
+
 /* ════════ RESPONSIVE POLISH (Wave 1 — desktop + mobile) ════════
    Consistent breakpoint: 768px = the sidebar/bottom-nav switch (matches Tailwind md:).
    These rules harden layout for BOTH viewports without touching markup/handlers. */
@@ -1482,7 +1518,7 @@ function _recoverEditingSubmissions(){
   });
 }
 /* ===== NAVIGATION ===== */
-const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['expenses','msg','Expenses'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['sops','list','SOPs'],['schedule','clock','Schedule'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['reports','audit','Reports'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
+const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['schedule','clock','Schedule'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['reports','audit','Reports'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
 const NAV_USR=[['dashboard','grid','Home'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['notifications','bell','Notifications']];
 const NAV_MGR=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['teamview','users','Team'],['users','user','My Users'],['checklists','list','Create Checklist'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics']];
 const MOB_ADM=['dashboard','mychecklists','attendance','notifications','more'];
@@ -1552,12 +1588,8 @@ const navFor=()=>{
     const after=base.findIndex(n=>n[0]==='users')>-1?base.findIndex(n=>n[0]==='users'):base.findIndex(n=>n[0]==='teamview');
     base.splice(after>-1?after+1:base.length,0,['hierarchy','tree','Hierarchy']);
   }
-  // SOPs tab for anyone who can view it (HR/SubAdmin/manager). Assignees see their own assigned-SOP card on
-  // the dashboard, so the (HR-flavoured) tab is gated on can('sops','view') == nav==router guard.
-  if(can('sops','view')&&!base.find(n=>n[0]==='sops')){
-    const after=base.findIndex(n=>n[0]==='users')>-1?base.findIndex(n=>n[0]==='users'):base.findIndex(n=>n[0]==='hierarchy');
-    base.splice(after>-1?after+1:base.length,0,['sops','list','SOPs']);
-  }
+  // SOPs tab removed from navigation per product decision (assignees still see their assigned-SOP
+  // card on the dashboard; the route remains reachable for any existing deep links).
   // Scheduling/Rostering: managers/HR who can BUILD the roster get the People-section "Schedule" tab
   //   (→ schedulePage). Everyone else who can view scheduling gets "My Schedule" in the daily strip
   //   (→ mySchedulePage, their own published shifts). nav == router == permission.
@@ -1570,13 +1602,7 @@ const navFor=()=>{
       base.splice(after>-1?after+1:base.length,0,['myschedule','clock','My Schedule']);
     }
   }
-  // Expenses: every employee can view + submit their OWN claims (base floor = true, like leave), so the
-  //   tab surfaces for anyone who can view expenses. Approvers also use the Approvals inbox; the page's
-  //   banner links there. nav == router == permission. Placed next to Leave in the daily strip.
-  if(!isAdmin()&&can('expenses','view')&&!base.find(n=>n[0]==='expenses')){
-    const after=base.findIndex(n=>n[0]==='leave')>-1?base.findIndex(n=>n[0]==='leave'):base.findIndex(n=>n[0]==='attendance');
-    base.splice(after>-1?after+1:base.length,0,['expenses','msg','Expenses']);
-  }
+  // Expenses tab removed from navigation per product decision (route remains reachable for deep links).
   return base;
 };
 /* ───── Grouped nav (presentation only) ─────
@@ -1584,7 +1610,7 @@ const navFor=()=>{
    navSectionsFor() buckets that SAME flat list into Daily + collapsible sections. No route or
    can()-gating logic changes — it only reshapes for rendering. Every flat item lands somewhere
    (unknown keys fall through to a "More" section so nothing is ever dropped). */
-const NAV_DAILY=['dashboard','approvals','leave','expenses','attendance','myschedule','tickets','mychecklists','notifications'];
+const NAV_DAILY=['dashboard','approvals','leave','attendance','myschedule','tickets','mychecklists','notifications'];
 const NAV_SECTION_OF={
   // Work
   mychecklists:'__daily',checklists:'Work',allcl:'Work',questions:'Work',announcements:'Work',
@@ -1718,7 +1744,7 @@ function shell(content){
     <div style="max-width:1152px;width:100%;margin:0 auto;padding:0 20px">${_annBanner()}</div>
     <main id="content" style="flex:1;padding:22px 20px;padding-bottom:96px;max-width:1152px;width:100%;margin:0 auto" class="md:pb-10">${content}</main>
   </div>
-  <nav class="md:hidden fixed bottom-0 inset-x-0 z-30" style="background:var(--c-surface);border-top:1px solid var(--c-border);padding-bottom:env(safe-area-inset-bottom);box-shadow:0 -2px 16px rgba(16,24,40,.06)">
+  <nav id="bottom-nav" class="mob-nav md:hidden fixed bottom-0 inset-x-0 z-30" style="background:var(--c-surface);border-top:1px solid var(--c-border);padding-bottom:env(safe-area-inset-bottom);box-shadow:0 -2px 16px rgba(16,24,40,.06)">
     <div style="display:grid;grid-template-columns:repeat(${mob.length},1fr);height:60px">
       ${mob.map(r=>{
         if(r==='more')return`<button onclick="App.moreMenu()" aria-label="More" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border:none;background:transparent;cursor:pointer;color:var(--c-text-3);min-height:44px">${ic('menu','w-[22px] h-[22px]')}<span style="font-size:10px;font-weight:700">More</span></button>`;
@@ -1761,8 +1787,6 @@ App.quickAdd=()=>{
   if(can('tickets','create')!==false)actions.push(['New ticket','ticket','App.closeModal();App.newTicket()']);
   if(can('announcements','create'))actions.push(['New announcement','msg','App.closeModal();App.newAnnouncement()']);
   if(can('users','create')||isAdmin())actions.push(['Add user','user','App.closeModal();App.editUser()']);
-  if(can('sops','manage'))actions.push(['New SOP',"list","App.closeModal();App.go('sops')"]);
-  if(can('expenses','submit')!==false)actions.push(['Submit expense claim','msg','App.closeModal();App.applyExpense()']);
   if(can('checklists','create')||isAdmin()||isSubAdmin())actions.push(['New checklist','check',"App.closeModal();App.go('checklists')"]);
   const row=([label,icon,onclick])=>`<button onclick="${onclick}" style="width:100%;display:flex;align-items:center;gap:13px;padding:14px 16px;border-radius:var(--r-md);border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;text-align:left;min-height:56px;margin-bottom:8px">
     <span style="flex-shrink:0;width:38px;height:38px;border-radius:11px;background:var(--c-brand-soft);color:var(--c-brand-ink);display:grid;place-items:center">${ic(icon,'w-5 h-5')}</span>
@@ -4306,34 +4330,29 @@ const _APPR_META={
 const _APPR_ORDER=['leave','submission','edit','document','sop','expense'];
 function unifiedApprovalsPage(){
   const all=_approvalInbox();
-  // AP1: 'Approved' / 'Rejected' migrate to a single 'History' view (the per-row status
-  // badge already distinguishes them) so the page shows one status row, not two redundant ones.
-  let tab=S.filters.atab||'Pending';
-  if(tab==='Approved'||tab==='Rejected')tab='History';
+  // Single unified list: EVERYTHING (pending + decided) shows here in one view. Pending items
+  // sort to the top (actionable); decided items follow by most-recent. The per-row status badge
+  // distinguishes approved/rejected. Type chips below act as an optional filter.
   const typeF=S.filters.inboxType||'all';
-  const tabMatch=x=>tab==='History'?(x.status==='Approved'||x.status==='Rejected'):x.status==='Pending';
-  const cnt={Pending:all.filter(x=>x.status==='Pending').length,History:all.filter(x=>x.status==='Approved'||x.status==='Rejected').length};
-  // Which types exist AT ALL (any status) → drives the chips shown.
+  // Which types exist AT ALL → drives the chips shown.
   const presentTypes=new Set(all.map(x=>x.type));
-  let rows=all.filter(tabMatch);
+  let rows=all.slice();
   if(typeF!=='all')rows=rows.filter(x=>x.type===typeF);
-  rows.sort((a,b)=>{const ta=a.payload?.createdAt||'';const tb=b.payload?.createdAt||'';return tb.localeCompare(ta);});
-  const TABS=['Pending','History'];
+  const _rank=s=>s==='Pending'?0:1;
+  rows.sort((a,b)=>{const r=_rank(a.status)-_rank(b.status);if(r)return r;const ta=a.payload?.createdAt||'';const tb=b.payload?.createdAt||'';return tb.localeCompare(ta);});
+  const statusBar='';
   // type filter chips — only show 'All' + types that have items
-  const statusBar='<div class="ui-tabs" style="margin-bottom:14px">'
-    +TABS.map(t=>{const a=tab===t;const b=cnt[t]?(' <span style="display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;padding:1px 6px;min-width:16px;border-radius:99px;margin-left:6px;background:'+(a?'rgba(255,255,255,.22)':'var(--c-border)')+';color:'+(a?'#fff':'var(--c-text-2)')+'">'+cnt[t]+'</span>'):'';return '<button class="ui-tab'+(a?' on':'')+'" onclick="App._setTab(this.dataset.t)" data-t="'+t+'">'+t+b+'</button>';}).join('')
-    +'</div>';
-  const chips='<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;overflow-x:auto">'
+  const chips=(presentTypes.size>1)?('<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;overflow-x:auto">'
     +[['all','All']].concat(_APPR_ORDER.filter(t=>presentTypes.has(t)).map(t=>[t,_APPR_META[t].label]))
       .map(([k,l])=>{const a=typeF===k;return '<button class="ui-tab-pill'+(a?' on':'')+'" onclick="App._setInboxType(this.dataset.k)" data-k="'+k+'">'+esc(l)+'</button>';}).join('')
-    +'</div>';
-  // Bulk-approve bar: only for Pending + a single type filter (same type) so we can loop the
-  // native handler per row. Hidden on 'all' (mixed types) and on non-pending tabs.
-  const bulkable=tab==='Pending'&&typeF!=='all'&&rows.some(r=>r.status==='Pending');
-  const bulkBar=bulkable?'<div style="margin-bottom:12px"><button class="ui-btn ui-btn-brand ui-btn-sm" onclick="App._bulkApproveInbox(this.dataset.t)" data-t="'+esc(typeF)+'">'+ic('approve','w-4 h-4')+'Approve all '+esc(_APPR_META[typeF].label.toLowerCase())+' ('+rows.length+')</button></div>':'';
+    +'</div>'):'';
+  // Bulk-approve bar: only when a single type is filtered (same type) and pending items exist.
+  const bulkable=typeF!=='all'&&rows.some(r=>r.status==='Pending');
+  const _pendN=rows.filter(r=>r.status==='Pending').length;
+  const bulkBar=bulkable?'<div style="margin-bottom:12px"><button class="ui-btn ui-btn-brand ui-btn-sm" onclick="App._bulkApproveInbox(this.dataset.t)" data-t="'+esc(typeF)+'">'+ic('approve','w-4 h-4')+'Approve all '+esc(_APPR_META[typeF].label.toLowerCase())+' ('+_pendN+')</button></div>':'';
   const body=rows.length?rows.map(_inboxRow).join('')
     :(_isLoading('approvals')?loadingState('Loading approvals…')
-      :empty('approve','No '+(tab==='History'?'past':'pending')+' approvals','You\'re all caught up.'));
+      :empty('approve','No approvals','You\'re all caught up.'));
   return '<div class="fade">'+hdr('Approvals','Every pending decision in one place')
     +chips+statusBar+bulkBar
     +'<div class="space-y-3">'+body+'</div></div>';
@@ -8395,13 +8414,8 @@ function leavePage(){
   // unified Approvals inbox — the old mgr/hr sub-tabs (_leaveApprovalList) are retired here.
   // The decision handlers (decideLeave, _canActOn, _leaveApprovalList) stay defined; the inbox
   // uses them. We show a one-line pointer to Approvals when this user has pending team/HR leave.
-  const u=me();
-  const pendN=_mgrPendingCount()+_hrPendingCount();
-  const banner=(pendN>0||isMgr()||isAdmin()||isHR())
-    ?`<div onclick="App.go('approvals')" style="display:flex;align-items:center;gap:10px;margin-bottom:18px;padding:13px 16px;border-radius:var(--r-md);background:var(--c-warn-soft);border:1px solid #FCD9A8;color:var(--c-warn-ink);font-size:13.5px;font-weight:600;cursor:pointer">${ic('approve','w-[18px] h-[18px]')}<span style="flex:1">Approve team &amp; HR leave in the Approvals inbox</span>${pendN>0?countBadge(pendN,'approve'):''}${ic('chevR','w-4 h-4')}</div>`
-    :'';
   const body=_myLeaveView();
-  return `<div class="fade">${hdr('Leave','Apply for leave and track your balances',btnP('Apply for leave','App.applyLeave()','plus'))}${banner}${body}</div>`;
+  return `<div class="fade">${hdr('Leave','Apply for leave and track your balances',btnP('Apply for leave','App.applyLeave()','plus'))}${body}</div>`;
 }
 function _isMgrApprover(r){if(r.userId===S.uid)return false;const emp=uById(r.userId);if(!emp)return false;return isAdmin()||emp.managerId===S.uid||_underOn(r.userId,S.uid,r.start);}
 
