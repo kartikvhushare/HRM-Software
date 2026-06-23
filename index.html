@@ -1172,7 +1172,7 @@ function _ensureHrm(u){
 // affect can()/scope resolution). Every `actions` entry below is an action that is actually enforced
 // by a can(area,action) gate somewhere in this file (verified by grep — see B2a matrix); the editor
 // is fully data-driven from this list so a toggle exists for every gate the app checks.
-const PERM_GROUPS=['People & Org','Leave & Attendance','Tasks & Tickets','Content','System'];
+const PERM_GROUPS=['People & Org','Leave & Attendance','Tasks & Tickets','Content','Insights','System'];
 const PERM_AREAS=[
   {key:'dashboard',label:'Dashboard',desc:'The landing overview',actions:['view'],scoped:false,group:'System'},
   {key:'attendance',label:'Attendance',desc:'Clock-in/out records & calendar',actions:['view','edit','download'],scoped:true,group:'Leave & Attendance'},
@@ -1181,13 +1181,13 @@ const PERM_AREAS=[
   {key:'hrSettings',label:'HR settings',desc:'Leave policy, types, holidays, approval flows',actions:['view','edit'],scoped:false,group:'Leave & Attendance'},
   {key:'employees',label:'Employees / Users',desc:'The people directory',actions:['view','create','edit','delete','deactivate','assignManager','assignRole','assign','manage'],scoped:true,group:'People & Org'},
   {key:'hierarchy',label:'Hierarchy / Org chart',desc:'The reporting tree',actions:['view'],scoped:true,group:'People & Org'},
-  {key:'scheduling',label:'Shift scheduling',desc:'Build the weekly roster, publish shifts; employees see their own',actions:['view','manage'],scoped:true,group:'People & Org'},
   {key:'checklists',label:'Checklists',desc:'The checklist system',actions:['view','create','edit','assign','approve'],scoped:true,group:'Tasks & Tickets'},
   {key:'questions',label:'Questions',desc:'The questions feature',actions:['view','manage'],scoped:false,group:'Tasks & Tickets'},
   {key:'tickets',label:'Tickets',desc:'Issue tickets',actions:['view','create','manage'],scoped:true,group:'Tasks & Tickets'},
   {key:'documentsOrg',label:'Documents (organization)',desc:'Shared dept/location files',actions:['view','create','delete','download','approve'],scoped:true,group:'Content'},
   {key:'documentsPersonal',label:'Personal documents',desc:'Files on a person\'s profile',actions:['view','create','delete','download'],scoped:true,group:'Content'},
-  {key:'reports',label:'Reports & Analytics',desc:'HR reports, dashboards & CSV exports',actions:['view','download'],scoped:false,group:'Insights'},
+  {key:'analytics',label:'Analytics',desc:'Operational analytics dashboard (checklists, compliance, tickets)',actions:['view'],scoped:false,group:'Insights'},
+  {key:'reports',label:'HRM Analytics',desc:'HR analytics dashboard & CSV exports',actions:['view','download'],scoped:false,group:'Insights'},
   {key:'announcements',label:'Announcements',desc:'Company-wide messages',actions:['view','create'],scoped:false,group:'Content'},
   {key:'locations',label:'Locations',desc:'Offices and GPS boundary',actions:['view','create','edit','manage'],scoped:false,group:'System'},
   {key:'departments',label:'Departments',desc:'Department list',actions:['view','create','edit'],scoped:false,group:'System'},
@@ -1310,10 +1310,9 @@ function _baseCan(area,action){
       if(action==='assignRole')return false; /* Super Admin only (isAdmin() short-circuits) */
       return action==='view'?(sub||mgr):sub; /* create/edit/delete today = Super Admin only → handled by isAdmin() in can() */
     case 'hierarchy':return true;
-    case 'sops':return action==='view'?(sub||mgr||hr):(sub||hr); // HR/SubAdmin manage+approve; managers view their assignees' progress
-    case 'scheduling':return action==='view'?true:(sub||mgr||hr); // view=everyone (own published roster); manage(build/publish)=SubAdmin/manager/HR
-    case 'expenses':return action==='approve'?(sub||mgr||hr):true; // submit/view=everyone (own claims, like leave); approve=SubAdmin/manager/HR
+    case 'scheduling':return action==='view'?true:(sub||mgr||hr); // retired feature; kept only for the (now inert) shifts sync gate
     case 'checklists':return action==='view'?true:(sub||mgr);
+    case 'analytics':return (sub||mgr||hr); // operational analytics dashboard — managers/HR/SubAdmin by default
     case 'questions':return q||sub;
     case 'tickets':return action==='manage'?(sub||mgr):true; /* create/view=everyone; manage/resolve historically requires SubAdmin or Manager (per-ticket subtree/assignee still enforced in the ticket UI) */
     case 'documentsOrg':return action==='approve'?hr:doc; /* approve = HR/Admin only by default; grant to others in Access Control */
@@ -1506,7 +1505,7 @@ function _recoverEditingSubmissions(){
   });
 }
 /* ===== NAVIGATION ===== */
-const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['schedule','clock','Schedule'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
+const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
 const NAV_USR=[['dashboard','grid','Home'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['notifications','bell','Notifications']];
 const NAV_MGR=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['teamview','users','Team'],['users','user','My Users'],['checklists','list','Create Checklist'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics']];
 const MOB_ADM=['dashboard','mychecklists','attendance','notifications','more'];
@@ -1573,18 +1572,6 @@ const navFor=()=>{
     const after=base.findIndex(n=>n[0]==='users')>-1?base.findIndex(n=>n[0]==='users'):base.findIndex(n=>n[0]==='teamview');
     base.splice(after>-1?after+1:base.length,0,['hierarchy','tree','Hierarchy']);
   }
-  // Scheduling/Rostering: managers/HR who can BUILD the roster get the People-section "Schedule" tab
-  //   (→ schedulePage). Everyone else who can view scheduling gets "My Schedule" in the daily strip
-  //   (→ mySchedulePage, their own published shifts). nav == router == permission.
-  if(!isAdmin()){
-    if(can('scheduling','manage')&&!base.find(n=>n[0]==='schedule')){
-      const after=base.findIndex(n=>n[0]==='users');
-      base.splice(after>-1?after+1:base.length,0,['schedule','clock','Schedule']);
-    }else if(can('scheduling','view')&&!base.find(n=>n[0]==='myschedule')){
-      const after=base.findIndex(n=>n[0]==='attendance');
-      base.splice(after>-1?after+1:base.length,0,['myschedule','clock','My Schedule']);
-    }
-  }
   return base;
 };
 /* ───── Grouped nav (presentation only) ─────
@@ -1592,12 +1579,12 @@ const navFor=()=>{
    navSectionsFor() buckets that SAME flat list into Daily + collapsible sections. No route or
    can()-gating logic changes — it only reshapes for rendering. Every flat item lands somewhere
    (unknown keys fall through to a "More" section so nothing is ever dropped). */
-const NAV_DAILY=['dashboard','approvals','leave','attendance','myschedule','tickets','mychecklists','notifications'];
+const NAV_DAILY=['dashboard','approvals','leave','attendance','tickets','mychecklists','notifications'];
 const NAV_SECTION_OF={
   // Work
   mychecklists:'__daily',checklists:'Work',allcl:'Work',questions:'Work',announcements:'Work',
   // People
-  users:'People',teamview:'People',hierarchy:'People',schedule:'People',
+  users:'People',teamview:'People',hierarchy:'People',
   // Insights
   analytics:'Insights',hrmanalytics:'Insights',
   // Setup
@@ -1619,11 +1606,14 @@ function navSectionsFor(){
   const ordered=[...NAV_SECTION_ORDER,'More'].filter(s=>sections[s]&&sections[s].length).map(s=>({label:s,icon:NAV_SECTION_ICON[s]||'grid',items:sections[s]}));
   return {daily,sections:ordered};
 }
-App.toggleNavSec=(name,btn)=>{S._navCollapsed=S._navCollapsed||{};S._navCollapsed[name]=!S._navCollapsed[name];
-  // Toggle the section in-place (no full re-render) so the sidebar scroll position is preserved
-  // and the expand/collapse feels instant. Falls back to render() if the element isn't found.
+App.toggleNavSec=(name,btn)=>{S._navCollapsed=S._navCollapsed||{};
+  // Toggle in-place (no full re-render) so the sidebar scroll position is preserved and it feels
+  // instant. IMPORTANT: flip from the element's ACTUAL collapsed state — not a stale in-memory flag.
+  // (A section can render collapsed by default while S._navCollapsed[name] is still undefined; toggling
+  // the stale flag would compute the wrong direction and the panel would appear stuck.)
   const sec=btn&&btn.closest?btn.closest('.nav-sec'):null;
-  if(sec){sec.classList.toggle('collapsed',!!S._navCollapsed[name]);}else{render();}};
+  if(sec){const collapsed=sec.classList.toggle('collapsed');S._navCollapsed[name]=collapsed;}
+  else{S._navCollapsed[name]=!S._navCollapsed[name];render();}};
 App.go=(r)=>{S.route=r;S.search='';S.expandedCl=null;S.afOpen=null;
   // Preserve analytics filters; preserve questions sub-tab state; reset everything else
   if(r==='analytics'){/* keep filters */}
@@ -1631,7 +1621,6 @@ App.go=(r)=>{S.route=r;S.search='';S.expandedCl=null;S.afOpen=null;
   else if(r==='notifications'){const ntab=S.filters.ntab;S.filters={};if(ntab)S.filters.ntab=ntab;}
   else if(r==='settings'){const stab=S.filters.stab;const tplKey=S.filters.tplKey;S.filters={};if(stab)S.filters.stab=stab;if(tplKey)S.filters.tplKey=tplKey;}
   else if(r==='attendance'||r==='leave'||r==='hrmconfig'||r==='hrmanalytics'){const htab=S.filters.htab;const cfgtab=S.filters.cfgtab;S.filters={};if(htab)S.filters.htab=htab;if(cfgtab)S.filters.cfgtab=cfgtab;}
-  else if(r==='schedule'||r==='myschedule'){const schWk=S.filters.schWk,schDept=S.filters.schDept,schLoc=S.filters.schLoc;S.filters={};if(schWk!=null)S.filters.schWk=schWk;if(schDept)S.filters.schDept=schDept;if(schLoc)S.filters.schLoc=schLoc;}
   else{S.filters={};}
   if(r!=='teamview')S.tvUser=null;
   // Update URL hash so email deep-links work
@@ -1804,10 +1793,10 @@ App.logout=()=>{
 function pageContent(){
   const r=S.route;
   if(r==='dashboard'){if(isAdmin())return adminDash();if(isMgr())return mgrDash();return homeDash();}
-  if(r==='users')return usersPage();
-  if(r==='departments')return deptsPage();
-  if(r==='locations')return locsPage();
-  if(r==='checklists')return clsPage();
+  if(r==='users'){if(isAdmin()||can('employees','view'))return usersPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  if(r==='departments'){if(isAdmin()||can('departments','view'))return deptsPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  if(r==='locations'){if(isAdmin()||can('locations','view'))return locsPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  if(r==='checklists'){if(isAdmin()||isSubAdmin()||can('checklists','create'))return clsPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='approvals'){if(isAdmin()||isSubAdmin()||isMgr()||can('leaveRequests','approve'))return unifiedApprovalsPage();S.route='notifications';return notificationsPage();}
   if(r==='notifications')return notificationsPage();
   if(r==='tickets')return ticketsPage();
@@ -1815,12 +1804,12 @@ function pageContent(){
   // SOPs/Onboarding feature retired — redirect any lingering #sops deep-link to the home dashboard.
   if(r==='sops'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='announcements'){if(can('announcements','view'))return announcementsPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
-  if(r==='analytics')return analyticsPage();
-  if(r==='audit')return auditPage();
-  if(r==='settings')return settingsPage();
+  if(r==='analytics'){if(isAdmin()||can('analytics','view'))return analyticsPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  if(r==='audit'){if(isAdmin()||can('audit','view'))return auditPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  if(r==='settings'){if(isAdmin()||can('settings','view'))return settingsPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   if(r==='questions'){if(can('questions','view'))return questionsPage();return myClsPage();}
   if(r==='mychecklists')return myClsPage();
-  if(r==='teamview')return teamViewPage();
+  if(r==='teamview'){if(isAdmin()||isSubAdmin()||isMgr())return teamViewPage();S.route='mychecklists';return myClsPage();}
   if(r==='allcl'){if(isAdmin()||isSubAdmin())return allClsPage();return myClsPage();}
   if(r==='profile')return profilePage();
   if(r==='attendance')return attendancePage();
@@ -1831,8 +1820,8 @@ function pageContent(){
   // redirects to HRM Analytics so old links keep working.
   if(r==='reports'){S.route='hrmanalytics';if(can('reports','view'))return hrmAnalyticsPage();S.route='attendance';return attendancePage();}
   if(r==='accesscontrol'){if(isAdmin())return accessControlPage();S.route='dashboard';if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
-  if(r==='schedule'){if(can('scheduling','manage'))return schedulePage();S.route='myschedule';return mySchedulePage();}
-  if(r==='myschedule')return mySchedulePage();
+  // Scheduling feature removed — redirect any lingering #schedule/#myschedule deep-link to the dashboard.
+  if(r==='schedule'||r==='myschedule'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   // Expenses feature retired — redirect any lingering #expenses deep-link to the home dashboard.
   if(r==='expenses'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   return empty('grid','Not found','');
@@ -2105,7 +2094,6 @@ function _hrmUserSection(u){
         ?`${selF('Role profile','u-rprof',rpOpts,h.roleProfileId||'')}<p style="font-size:11px;color:#9CA3AF;margin-top:4px">Decides what this person can do across the app. Manage profiles in <strong>Access Control</strong>. "Base role default" keeps today's behavior for their base role.</p>`
         // C2: no assignRole permission → show current profile read-only + hidden input so saveUser preserves it verbatim.
         :`<div class="w-full bg-ink-50 border border-ink-200 rounded-xl px-3 py-2.5 text-sm text-ink-500">${esc((rpOpts.find(o=>o[0]===(h.roleProfileId||''))||['','— Base role default —'])[1])}</div><input type="hidden" id="u-rprof" value="${esc(h.roleProfileId||'')}"><p style="font-size:11px;color:#9CA3AF;margin-top:4px">Only an administrator can change a role profile.</p>`}</div>
-    ${u&&can('leaveBalances','grant')&&(u.id!==S.uid)?`<div style="border-top:1px solid #E5E7EB;padding-top:10px"><p class="text-[10px] font-bold text-ink-400 uppercase tracking-wide mb-1">Comp-off (HR) · ${_compOffRemaining(u.id)} day(s) remaining</p><div class="grid grid-cols-2 gap-2"><input id="u-co-days" type="number" step="0.5" placeholder="Days (+ grant / − remove)" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"/><input id="u-co-exp" type="date" title="Expiry (for grants)" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"/></div><input id="u-co-reason" placeholder="Reason" class="w-full bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf mt-2"/><button type="button" onclick="App.addCompOff('${u.id}')" style="margin-top:8px;width:100%;padding:9px;border-radius:10px;border:1px solid #E5E7EB;background:#fff;font-weight:600;font-size:13px;cursor:pointer">Apply comp-off change</button>${(u.hrm?.compOff||[]).length?`<div style="margin-top:8px;max-height:120px;overflow:auto">${(u.hrm.compOff||[]).slice().reverse().map(e=>`<div style="font-size:11px;color:#6B7280;padding:3px 0;border-bottom:1px solid #F3F4F6"><strong style="color:${(Number(e.days)||0)<0?'#B91C1C':'#0E7A4F'}">${(Number(e.days)||0)>0?'+':''}${e.days}</strong> · ${esc(e.reason||'')}${e.expiry?(' · exp '+fmtD(e.expiry)):''}</div>`).join('')}</div>`:''}</div>`:''}
   </div>`;
 }
 function _readHrmFromForm(prev){
@@ -3417,7 +3405,6 @@ function homeDash(){
   return `<div class="fade">
     <div style="margin-bottom:18px"><h1 class="fd" style="font-size:var(--fs-h1);font-weight:800;letter-spacing:-.6px;color:var(--c-text)">${greet}, ${esc(u.firstName||fullName(u))}</h1><p style="font-size:14px;color:var(--c-text-2);margin-top:3px">${new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})}</p></div>
     ${_clockWidget()}
-    ${_myShiftsCard()}
     ${tiles?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">${tiles}</div>`:''}
     <div class="grid md:grid-cols-2 gap-4 items-start" style="margin-bottom:16px">${clCard}${leaveCard}</div>
     <div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Quick actions</div>
@@ -4554,7 +4541,7 @@ App._viewSubFor=async(btn)=>{
 /* ===== BOOT ===== */
 (async function boot(){
   const _hashRoute=(window.location.hash||'').replace('#','').trim();
-  const VALID_ROUTES=['dashboard','mychecklists','users','hierarchy','checklists','allcl','questions','approvals','notifications','analytics','locations','departments','settings','audit','teamview','profile','attendance','leave','hrmconfig','hrmanalytics','accesscontrol','announcements','schedule','myschedule','reports','tickets'];
+  const VALID_ROUTES=['dashboard','mychecklists','users','hierarchy','checklists','allcl','questions','approvals','notifications','analytics','locations','departments','settings','audit','teamview','profile','attendance','leave','hrmconfig','hrmanalytics','accesscontrol','announcements','reports','tickets'];
   const _deepLink=VALID_ROUTES.includes(_hashRoute)?_hashRoute:null;
   try{const{data:{session}}=await sb.auth.getSession();if(session){
       // Load local cache first for instant UI
@@ -5552,7 +5539,6 @@ const _NOTIF_ROUTE={
   announcement:'announcements',
   checklist:'mychecklists',
   attendance:'attendance',
-  myschedule:'myschedule', // N6: published-shift notifications
 };
 App._notifClick=(id)=>{
   const n=DB.notifications.find(x=>x.id===id);if(!n)return;
@@ -6695,6 +6681,8 @@ const EMAIL_EVENTS=[
   {key:'approval_decided', label:'Approval decided',     vars:'{{user_name}}, {{checklist_name}}, {{action_url}}'},
   {key:'feedback_received',label:'Feedback received',    vars:'{{user_name}}, {{checklist_name}}, {{action_url}}'},
   {key:'deadline_reminder',label:'Deadline reminder',    vars:'{{user_name}}, {{checklist_name}}, {{action_url}}'},
+  {key:'escalation',       label:'Escalation raised',    vars:'{{submitter}}, {{checklist_name}}, {{question}}, {{answer}}, {{action_url}}'},
+  {key:'announcement',     label:'Announcement',         vars:'{{title}}, {{body}}, {{action_url}}'},
   // ── HRM (Attendance & Leave) templates — gated by the HR-email master switch + per-event toggle. ──
   {key:'hrm_leave_submitted',label:'HR · Leave — approval needed',vars:'{{approver_name}}, {{user_name}}, {{leave_type}}, {{start_date}}, {{end_date}}, {{working_days}}, {{reason}}, {{action_url}}'},
   {key:'hrm_leave_approved', label:'HR · Leave — approved',       vars:'{{user_name}}, {{leave_type}}, {{start_date}}, {{end_date}}, {{working_days}}, {{approver_name}}, {{balance}}, {{action_url}}'},
@@ -6716,6 +6704,8 @@ function _defaultTemplates(){
     approval_decided: {subject:'Approval update: {{checklist_name}}',          body:'Hi {{user_name}},\n\nYour approval request for {{checklist_name}} has been decided.\n\n{{action_url}}'},
     feedback_received:{subject:'💬 New feedback received',                      body:'Hi {{user_name}},\n\nYou have received new feedback on {{checklist_name}}.\n\n{{action_url}}'},
     deadline_reminder:{subject:'⏳ Reminder: {{checklist_name}} deadline soon', body:'Hi {{user_name}},\n\nYour checklist {{checklist_name}} deadline is approaching soon. Please complete it before the cutoff.\n\n{{action_url}}'},
+    escalation:{subject:'⚠️ Escalation: {{checklist_name}}',                    body:'An escalation was raised on {{checklist_name}}.\n\nQuestion: {{question}}\nAnswer: {{answer}}\nRaised by: {{submitter}}\n\nOpen Shiftly to follow up.\n\n{{action_url}}'},
+    announcement:{subject:'📣 {{title}}',                                       body:'{{body}}\n\n{{action_url}}'},
     // ── HRM templates — consistent subject + clean body with resolved variables. ──
     hrm_leave_submitted:{subject:'🔔 Leave approval needed: {{user_name}} — {{leave_type}}',
       body:'Hi {{approver_name}},\n\n{{user_name}} has requested {{leave_type}} and needs your approval.\n\nDates: {{start_date}} → {{end_date}} ({{working_days}})\nReason: {{reason}}\n\nReview and decide in Shiftly.\n\n{{action_url}}'},
@@ -6745,7 +6735,7 @@ function _nsDefault(){return{
   email_checklist_assigned:true,email_submission_submitted:false,
   email_submission_late:true,email_submission_approved:true,email_submission_rejected:true,
   email_approval_requested:true,email_approval_decided:true,
-  email_feedback_received:false,email_deadline_reminder:true,
+  email_feedback_received:false,email_deadline_reminder:true,email_escalation:true,
   templates:{},
 };}
 let _ns=null;
@@ -6831,7 +6821,7 @@ async function sendEmail(eventType, userId, vars){
     submission_late:'mychecklists', submission_approved:'mychecklists',
     submission_rejected:'mychecklists', approval_requested:'approvals',
     approval_decided:'approvals', feedback_received:'notifications',
-    deadline_reminder:'mychecklists',
+    deadline_reminder:'mychecklists', escalation:'tickets', announcement:'announcements',
     // HRM: approval-needed → approvals; everything else for the employee → leave page.
     hrm_leave_submitted:'approvals', hrm_leave_escalated:'approvals',
     hrm_leave_approved:'leave', hrm_leave_rejected:'leave', hrm_comp_off:'leave',
@@ -6992,6 +6982,7 @@ function settingsPage(){
         ${_nsTogRow('email_approval_requested','Approval requested','Email sent to admin')}
         ${_nsTogRow('email_approval_decided','Approval decided','Email sent to the user')}
         ${_nsTogRow('email_feedback_received','Feedback received','Email sent to the user')}
+        ${_nsTogRow('email_escalation','Escalation raised','Email sent to the person it escalates to')}
       </div>
     </div>
   </div>`;
@@ -7668,209 +7659,6 @@ function _clockWidget(){
   return `<div class="ui-card" style="padding:28px 22px;text-align:center;margin-bottom:18px;display:flex;flex-direction:column;align-items:center;border-top:3px solid ${accent}">${inner}</div>`;
 }
 
-/* ═══════════════ SHIFT SCHEDULING / ROSTERING (Part 2-A) ═══════════════
-   Data model: DB.shifts (synced to the `shifts` table, snake_case). A shift is one employee's planned
-   working block for one day. Managers/HR build a WEEKLY roster (employees × 7 days), then Publish a week
-   so its draft shifts flip to 'published' and employees see them. Employees see only their OWN published
-   shifts ("My Schedule"). All gated through can('scheduling','view'|'manage') + scopeFilter('scheduling'). */
-const _SCH_DOW=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-// Monday-anchored week start for a given offset (0 = this week). Returns the Monday's ISO date.
-function _schMonday(off){
-  const d=new Date(todayISO()+'T00:00:00');const dow=d.getDay();// 0=Sun..6=Sat
-  d.setDate(d.getDate()+(dow===0?-6:1-dow)+(off||0)*7);
-  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-}
-function _schWeekDates(off){const mon=_schMonday(off);return Array.from({length:7},(_,i)=>_isoAdd(mon,i));}
-// Shifts for a (userId,date), oldest-start first. Optionally only published.
-function _shiftsFor(userId,date,publishedOnly){
-  return (DB.shifts||[]).filter(s=>s.userId===userId&&s.date===date&&(!publishedOnly||s.status==='published'))
-    .sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-}
-// One compact shift chip (roster cell / list). Draft chips are muted; published chips are brand.
-function _shiftChip(s,editable){
-  const pub=s.status==='published';
-  const bg=pub?'var(--c-brand-soft)':'var(--c-surface-2)',fg=pub?'var(--c-brand-ink)':'var(--c-text-2)';
-  const loc=s.locationId?locById(s.locationId):null;
-  const sub=[loc?loc.name:'',s.note||''].filter(Boolean).join(' · ');
-  const act=editable?`onclick="App.schAddShift('${s.userId}','${s.date}','${s.id}')" style="cursor:pointer;"`:'';
-  return `<div ${act} title="${esc((pub?'Published':'Draft')+' · '+(sub||(s.start+'–'+s.end)))}" style="background:${bg};color:${fg};border:1px solid var(--c-border);border-radius:9px;padding:5px 8px;font-size:11.5px;line-height:1.3;${editable?'':'cursor:default'}">
-    <div style="font-weight:800;color:var(--c-text);white-space:nowrap">${esc(s.start||'')}–${esc(s.end||'')}</div>
-    ${sub?`<div style="font-size:10.5px;color:var(--c-text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(sub)}</div>`:''}
-    ${pub?'':`<div style="font-size:10px;font-weight:700;color:var(--c-text-3);margin-top:1px">Draft</div>`}
-  </div>`;
-}
-// Manager/HR weekly roster grid: rows = visible employees, cols = 7 days of the selected week.
-function schedulePage(){
-  if(!can('scheduling','manage')){S.route='myschedule';return mySchedulePage();}
-  const off=S.filters.schWk||0;const dates=_schWeekDates(off);const today=todayISO();
-  const monLbl=new Date(dates[0]+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'});
-  const sunLbl=new Date(dates[6]+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
-  // People this manager may roster (scheduling scope), excluding Super Admin + inactive.
-  const f=scopeFilter('scheduling');
-  let people=DB.users.filter(u=>u.status!=='Inactive'&&u.role!=='Admin'&&f(u.id));
-  // Filters: department + location.
-  const dept=S.filters.schDept||'',loc=S.filters.schLoc||'';
-  if(dept)people=people.filter(u=>u.department===dept);
-  if(loc)people=people.filter(u=>(u.hrm?.locationId||'')===loc);
-  people.sort((a,b)=>fullName(a).localeCompare(fullName(b)));
-  // Week stats + publishable draft count.
-  const weekShifts=(DB.shifts||[]).filter(s=>dates.includes(s.date)&&f(s.userId));
-  const draftN=weekShifts.filter(s=>s.status==='draft').length;
-  const pubN=weekShifts.filter(s=>s.status==='published').length;
-  // Filter controls.
-  const depts=[...new Set(DB.users.map(u=>u.department).filter(Boolean))].sort();
-  const locs=DB.locations.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
-  const deptChips=chipBar([['','All depts'],...depts.map(d=>[d,d])],dept,'App.schFilter.bind(null,\'dept\')',{style:'pill'});
-  const locChips=locs.length?chipBar([['','All offices'],...locs.map(l=>[l.id,l.name])],loc,'App.schFilter.bind(null,\'loc\')',{style:'pill'}):'';
-  // Header actions: prev/next week + publish.
-  const wkNav=`<div style="display:flex;align-items:center;gap:6px">
-    <button type="button" aria-label="Previous week" onclick="App.schWeek(-1)" style="width:34px;height:34px;border-radius:9px;border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;display:grid;place-items:center;color:var(--c-text-2)">${ic('back','w-4 h-4')}</button>
-    <button type="button" onclick="App.schWeek(0,true)" style="padding:0 12px;height:34px;border-radius:9px;font-size:12px;font-weight:700;border:none;cursor:pointer;background:${off===0?'var(--c-ink)':'var(--c-surface-2)'};color:${off===0?'#fff':'var(--c-text-2)'}">This week</button>
-    <button type="button" aria-label="Next week" onclick="App.schWeek(1)" style="width:34px;height:34px;border-radius:9px;border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;display:grid;place-items:center;color:var(--c-text-2)">${ic('chevR','w-4 h-4')}</button>
-  </div>`;
-  const actions=`${wkNav}${btn('Copy last week','App.schCopyWeek()',{variant:'ghost',size:'md',icon:'copy'})}${btn(draftN?`Publish week (${draftN})`:'Publish week','App.schPublishWeek()',{variant:'primary',size:'md',icon:'send'})}`;
-  // ── Desktop grid (≥ md) ──
-  const headRow=`<div class="sch-grid-row" style="display:grid;grid-template-columns:170px repeat(7,minmax(110px,1fr));border-bottom:1px solid var(--c-border)">
-    <div style="padding:10px 12px;font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Employee</div>
-    ${dates.map((d,i)=>{const isT=d===today;return `<div style="padding:10px 8px;text-align:center;border-left:1px solid var(--c-border);${isT?'background:var(--c-brand-soft)':''}">
-      <div style="font-size:11px;font-weight:800;color:${isT?'var(--c-brand-ink)':'var(--c-text-3)'};text-transform:uppercase">${_SCH_DOW[i]}</div>
-      <div style="font-size:12px;font-weight:700;color:var(--c-text-2);margin-top:1px">${new Date(d+'T00:00:00').getDate()}</div>
-    </div>`;}).join('')}
-  </div>`;
-  const bodyRows=people.map(u=>`<div class="sch-grid-row" style="display:grid;grid-template-columns:170px repeat(7,minmax(110px,1fr));border-bottom:1px solid var(--c-border)">
-    <div style="padding:10px 12px;display:flex;align-items:center;gap:8px;min-width:0">${avatar(u,'w-8 h-8','text-[11px]')}<div style="min-width:0"><div style="font-size:13px;font-weight:700;color:var(--c-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(fullName(u))}</div><div style="font-size:11px;color:var(--c-text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(u.department||'')}</div></div></div>
-    ${dates.map(d=>{const sh=_shiftsFor(u.id,d);const isT=d===today;return `<div style="padding:6px;border-left:1px solid var(--c-border);${isT?'background:rgba(14,159,110,.04)':''};display:flex;flex-direction:column;gap:5px;min-height:58px">
-      ${sh.map(s=>_shiftChip(s,true)).join('')}
-      <button type="button" aria-label="Add shift" onclick="App.schAddShift('${u.id}','${d}')" style="margin-top:auto;width:100%;border:1px dashed var(--c-border);background:transparent;border-radius:8px;color:var(--c-text-3);cursor:pointer;padding:3px;display:grid;place-items:center;opacity:.65">${ic('plus','w-3.5 h-3.5')}</button>
-    </div>`;}).join('')}
-  </div>`).join('');
-  const desktopGrid=`<div class="sch-desktop ui-card" style="padding:0;overflow-x:auto">${headRow}${people.length?bodyRows:`<div style="padding:0">${empty('users','No employees in scope','Adjust the department/office filter, or check your scheduling scope.')}</div>`}</div>`;
-  // ── Mobile (< md): per-employee stacked list of the week ──
-  const mobileList=`<div class="sch-mobile" style="display:flex;flex-direction:column;gap:12px">${people.length?people.map(u=>`<div class="ui-card" style="padding:14px">
-    <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">${avatar(u,'w-8 h-8','text-[11px]')}<div style="min-width:0"><div style="font-size:14px;font-weight:800;color:var(--c-text)">${esc(fullName(u))}</div><div style="font-size:11px;color:var(--c-text-3)">${esc(u.department||'')}</div></div></div>
-    <div style="display:flex;flex-direction:column;gap:8px">${dates.map((d,i)=>{const sh=_shiftsFor(u.id,d);const isT=d===today;return `<div style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;border-top:1px solid var(--c-border)">
-      <div style="width:54px;flex-shrink:0;font-size:12px;font-weight:700;color:${isT?'var(--c-brand-ink)':'var(--c-text-2)'}">${_SCH_DOW[i]} ${new Date(d+'T00:00:00').getDate()}</div>
-      <div style="flex:1;display:flex;flex-wrap:wrap;gap:6px;min-width:0">${sh.length?sh.map(s=>_shiftChip(s,true)).join(''):'<span style="font-size:12px;color:var(--c-text-3)">—</span>'}</div>
-      <button type="button" aria-label="Add shift" onclick="App.schAddShift('${u.id}','${d}')" style="flex-shrink:0;width:28px;height:28px;border:1px dashed var(--c-border);background:transparent;border-radius:8px;color:var(--c-text-3);cursor:pointer;display:grid;place-items:center">${ic('plus','w-3.5 h-3.5')}</button>
-    </div>`;}).join('')}</div>
-  </div>`).join(''):empty('users','No employees in scope','')}</div>`;
-  return `<div class="fade">
-    ${hdr('Schedule',`Week of ${monLbl} – ${sunLbl} · ${pubN} published · ${draftN} draft`,actions)}
-    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">${deptChips}${locChips}</div>
-    <style>@media(min-width:768px){.sch-mobile{display:none!important}}@media(max-width:767px){.sch-desktop{display:none!important}}</style>
-    ${desktopGrid}
-    ${mobileList}
-  </div>`;
-}
-// Employee "My Schedule": their OWN published shifts for this week + next (employees never see drafts).
-function mySchedulePage(){
-  const u=me();const today=todayISO();
-  const dates=[..._schWeekDates(0),..._schWeekDates(1)];
-  const mine=(DB.shifts||[]).filter(s=>s.userId===S.uid&&s.status==='published'&&dates.includes(s.date))
-    .sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start));
-  const byDate={};mine.forEach(s=>{(byDate[s.date]=byDate[s.date]||[]).push(s);});
-  const rows=dates.filter(d=>byDate[d]).map(d=>{
-    const isT=d===today;const dd=new Date(d+'T00:00:00');
-    return `<div class="ui-card" style="padding:14px;display:flex;align-items:flex-start;gap:12px;${isT?'border-color:var(--c-brand)':''}">
-      <div style="width:52px;flex-shrink:0;text-align:center">
-        <div style="font-size:11px;font-weight:800;color:${isT?'var(--c-brand-ink)':'var(--c-text-3)'};text-transform:uppercase">${dd.toLocaleDateString('en-GB',{weekday:'short'})}</div>
-        <div class="fd" style="font-size:22px;font-weight:800;color:var(--c-text)">${dd.getDate()}</div>
-        <div style="font-size:10px;color:var(--c-text-3)">${dd.toLocaleDateString('en-GB',{month:'short'})}</div>
-      </div>
-      <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">${byDate[d].map(s=>{const loc=s.locationId?locById(s.locationId):null;return `<div style="display:flex;align-items:center;gap:10px">
-        <span style="width:38px;height:38px;border-radius:11px;background:var(--c-brand-soft);color:var(--c-brand-ink);display:grid;place-items:center;flex-shrink:0">${ic('clock','w-5 h-5')}</span>
-        <div style="min-width:0"><div class="fd" style="font-size:15px;font-weight:800;color:var(--c-text)">${esc(s.start)} – ${esc(s.end)}</div><div style="font-size:12px;color:var(--c-text-2)">${[loc?loc.name:'',s.note||''].filter(Boolean).map(esc).join(' · ')||'Scheduled shift'}</div></div>
-      </div>`;}).join('')}</div>
-    </div>`;
-  }).join('');
-  return `<div class="fade">
-    ${hdr('My Schedule','Your published shifts — this week & next')}
-    ${mine.length?`<div style="display:flex;flex-direction:column;gap:10px">${rows}</div>`:empty('clock','No published shifts','Your manager has not published any shifts for the next two weeks yet.')}
-  </div>`;
-}
-
-// Add/edit a shift (managers/HR). id present = edit existing; absent = create for (userId,date).
-App.schAddShift=(userId,date,id)=>{
-  if(!can('scheduling','manage')){toast('You cannot edit the roster','err');return;}
-  const ex=id?(DB.shifts||[]).find(s=>s.id===id):null;
-  const f=scopeFilter('scheduling');
-  const people=DB.users.filter(u=>u.status!=='Inactive'&&u.role!=='Admin'&&(f(u.id)||u.id===userId)).sort((a,b)=>fullName(a).localeCompare(fullName(b)));
-  const locOpts=[['','— No office —'],...DB.locations.map(l=>[l.id,l.name])];
-  modalShell({title:ex?'Edit shift':'Add shift',sub:ex&&ex.status==='published'?'Editing a published shift — re-publish the week to push changes.':'',
-    body:`<div class="space-y-3">
-      ${selF('Employee','sch-user',people.map(u=>[u.id,fullName(u)]),ex?ex.userId:userId)}
-      ${fld('Date','sch-date',ex?ex.date:date,'date')}
-      <div class="grid grid-cols-2 gap-3">${fld('Start','sch-start',ex?ex.start:'09:00','time')}${fld('End','sch-end',ex?ex.end:'17:00','time')}</div>
-      ${selF('Office / location','sch-loc',locOpts,ex?(ex.locationId||''):'')}
-      <div><label for="sch-note" class="ui-label">Role / note</label><input id="sch-note" class="ui-input rf" value="${esc(ex?ex.note:'')}" placeholder="e.g. Front desk, Closing"/></div>
-    </div>`,
-    footer:`${ex?btn('Delete','App.schDelShift(\''+ex.id+'\')',{variant:'danger',size:'md'}):''}${btn('Cancel','App.closeModal()',{variant:'ghost',size:'md'})}${btn(ex?'Save':'Add shift','App.schSaveShift('+(ex?('\''+ex.id+'\''):'null')+')',{variant:'primary',size:'md'})}`});
-};
-App.schSaveShift=(id)=>{
-  if(!can('scheduling','manage')){toast('You cannot edit the roster','err');return;}
-  const userId=$('#sch-user')?.value,date=$('#sch-date')?.value,start=$('#sch-start')?.value,end=$('#sch-end')?.value;
-  const locationId=$('#sch-loc')?.value||null,note=($('#sch-note')?.value||'').trim();
-  if(!userId||!date||!start||!end){toast('Employee, date, start and end are required','err');return;}
-  if(end<=start){toast('End time must be after start time','err');return;}
-  const ex=id?(DB.shifts||[]).find(s=>s.id===id):null;
-  if(ex){Object.assign(ex,{userId,date,start,end,locationId,note});if(ex.status==='published')ex.status='draft',ex.publishedAt=null;} // edit re-drafts so the change is republished
-  else{DB.shifts=DB.shifts||[];DB.shifts.push({id:uid('sh'),userId,date,start,end,locationId,note,status:'draft',publishedAt:null,createdBy:S.uid,createdAt:new Date().toISOString()});}
-  _touchAction();saveDB();closeModal();toast(ex?'Shift updated':'Shift added','success');rr();
-};
-App.schDelShift=(id)=>{
-  if(!can('scheduling','manage')){toast('You cannot edit the roster','err');return;}
-  const s=(DB.shifts||[]).find(x=>x.id===id);if(!s)return;
-  DB.shifts=(DB.shifts||[]).filter(x=>x.id!==id);
-  if(!DB.shifts_deleted)DB.shifts_deleted=[];DB.shifts_deleted.push(id); // tombstone so a sync round-trip can't resurrect it
-  _touchAction();saveDB();closeModal();toast('Shift deleted','success');rr();
-};
-// Prev/next week (or jump to this week). off is relative; abs=true sets absolute.
-App.schWeek=(off,abs)=>{S.filters.schWk=abs?0:((S.filters.schWk||0)+off);rr();};
-App.schFilter=(kind,val)=>{if(kind==='dept')S.filters.schDept=val;else if(kind==='loc')S.filters.schLoc=val;rr();};
-// Publish the selected week: flip every in-scope DRAFT shift in the week to 'published'.
-App.schPublishWeek=()=>{
-  if(!can('scheduling','manage')){toast('You cannot publish the roster','err');return;}
-  const off=S.filters.schWk||0;const dates=_schWeekDates(off);const f=scopeFilter('scheduling');
-  const drafts=(DB.shifts||[]).filter(s=>s.status==='draft'&&dates.includes(s.date)&&(isAdmin()||isHR()||f(s.userId)||s.createdBy===S.uid));
-  if(!drafts.length){toast('No draft shifts to publish this week','warn');return;}
-  const now=new Date().toISOString();
-  drafts.forEach(s=>{s.status='published';s.publishedAt=now;_hrmNotify(s.userId,'📅 Your shift on '+fmtD(s.date)+' ('+s.start+'–'+s.end+') has been published.','myschedule');});
-  _touchAction();saveDB();toast('Published '+drafts.length+' shift'+(drafts.length===1?'':'s'),'success');rr();
-};
-// Copy last week's roster into the selected week as fresh drafts (skips dates that already have a shift for that person).
-App.schCopyWeek=()=>{
-  if(!can('scheduling','manage')){toast('You cannot edit the roster','err');return;}
-  const off=S.filters.schWk||0;const dst=_schWeekDates(off);const src=_schWeekDates(off-1);const f=scopeFilter('scheduling');
-  let n=0;DB.shifts=DB.shifts||[];
-  src.forEach((sd,i)=>{const dd=dst[i];
-    (DB.shifts.filter(s=>s.date===sd&&(isAdmin()||isHR()||f(s.userId)||s.createdBy===S.uid))).forEach(s=>{
-      if(DB.shifts.some(x=>x.userId===s.userId&&x.date===dd&&x.start===s.start&&x.end===s.end))return; // no dup
-      DB.shifts.push({id:uid('sh'),userId:s.userId,date:dd,start:s.start,end:s.end,locationId:s.locationId||null,note:s.note||'',status:'draft',publishedAt:null,createdBy:S.uid,createdAt:new Date().toISOString()});n++;
-    });
-  });
-  if(!n){toast('Nothing to copy from last week','warn');return;}
-  _touchAction();saveDB();toast('Copied '+n+' shift'+(n===1?'':'s')+' as drafts','success');rr();
-};
-// Compact "My next shifts" card for homeDash() — the employee's next published shift(s).
-function _myShiftsCard(){
-  if(!can('scheduling','view'))return '';
-  const today=todayISO();
-  const upcoming=(DB.shifts||[]).filter(s=>s.userId===S.uid&&s.status==='published'&&s.date>=today)
-    .sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start)).slice(0,3);
-  if(!upcoming.length)return '';
-  const rows=upcoming.map(s=>{const loc=s.locationId?locById(s.locationId):null;const dd=new Date(s.date+'T00:00:00');const isT=s.date===today;
-    return `<div style="display:flex;align-items:center;gap:11px;padding:7px 0;border-top:1px solid var(--c-border)">
-      <span style="width:36px;height:36px;border-radius:10px;background:${isT?'var(--c-brand-soft)':'var(--c-surface-2)'};color:${isT?'var(--c-brand-ink)':'var(--c-text-2)'};display:grid;place-items:center;flex-shrink:0;font-size:11px;font-weight:800;flex-direction:column;line-height:1">${dd.toLocaleDateString('en-GB',{weekday:'short'}).slice(0,2)}<span style="font-size:13px">${dd.getDate()}</span></span>
-      <div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:800;color:var(--c-text)" class="fd">${esc(s.start)} – ${esc(s.end)}${isT?' '+badge('Today','brand'):''}</div><div style="font-size:12px;color:var(--c-text-2)">${[loc?loc.name:'',s.note||''].filter(Boolean).map(esc).join(' · ')||'Scheduled shift'}</div></div>
-    </div>`;}).join('');
-  return `<div class="ui-card" style="padding:16px 18px;margin-bottom:16px">
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px">
-      <div style="font-size:14px;font-weight:800;color:var(--c-text)" class="fd">My next shifts</div>
-      <button onclick="App.go('myschedule')" style="font-size:12px;font-weight:700;color:var(--c-brand-ink);background:none;border:none;cursor:pointer">View all ${ic('chevR','w-3 h-3')}</button>
-    </div>${rows}</div>`;
-}
-// Today's published shift for a user, if any (used on the clock-in context). Returns the earliest.
-function _todayShift(userId){return _shiftsFor(userId,todayISO(),true)[0]||null;}
 
 /* Month-grid attendance calendar for a user */
 function _attCalendar(userId,ym){
@@ -8964,11 +8752,6 @@ App.saveLeaveType=(id)=>{
 };
 // §3a: comp-off grant/remove → appends to the dedicated u.hrm.compOff ledger (frontend-only).
 //   Positive days = grant (honors its own expiry); negative = removal. Independent of carriedExpiry.
-App.addCompOff=(userId)=>{
-  const u=uById(userId);if(!u)return;
-  if(!can('leaveBalances','grant')){toast('Not permitted','err');return;}
-  _grantCompOff(u,Number($('#u-co-days')?.value),($('#u-co-reason')?.value||'').trim(),$('#u-co-exp')?.value||null);
-};
 function _grantCompOff(u,days,reason,exp){
   if(!u)return false;
   if(!can('leaveBalances','grant')){toast('Not permitted','err');return false;}
