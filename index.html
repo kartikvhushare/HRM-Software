@@ -161,10 +161,11 @@ input,select,textarea{outline:none}
 
 /* iz / issue-zone (legacy, kept for compatibility) */
 .bg-ink-100{background:#ECEDF0!important}.bg-ink-200{background:#D6D8DE!important}
-.fld-card:hover{border-color:#0E9F6E!important;box-shadow:0 2px 12px rgba(14,159,110,.1)}
-.team-card-hover:hover{border-color:#0E9F6E!important;box-shadow:0 4px 16px rgba(14,159,110,.12)!important}
-.dept-card:hover{border-color:#0E9F6E!important;box-shadow:0 4px 16px rgba(14,159,110,.1)}
-.loc-card:hover{border-color:#3B82F6!important;box-shadow:0 4px 16px rgba(59,130,246,.1)}
+.fld-card,.team-card-hover,.dept-card,.loc-card{transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
+.fld-card:hover{border-color:#0E9F6E!important;box-shadow:0 8px 22px -6px rgba(14,159,110,.18);transform:translateY(-2px)}
+.team-card-hover:hover{border-color:#0E9F6E!important;box-shadow:0 10px 24px -8px rgba(14,159,110,.2)!important;transform:translateY(-2px)}
+.dept-card:hover{border-color:#0E9F6E!important;box-shadow:0 10px 24px -8px rgba(14,159,110,.18);transform:translateY(-2px)}
+.loc-card:hover{border-color:#3B82F6!important;box-shadow:0 10px 24px -8px rgba(59,130,246,.18);transform:translateY(-2px)}
 .shadow-soft{box-shadow:0 1px 4px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04)}
 /* Progress bar — used in admin dashboard department performance */
 .pg{height:6px;background:#ECEDF0;border-radius:3px;overflow:hidden}
@@ -3479,11 +3480,11 @@ function myClsPage(){
   <div style="display:flex;flex-direction:column;gap:8px">
     ${dayCls.length
       ?dayCls.map(c=>_clCard(c,sel)).join('')
-      :`<div style="padding:60px 20px;text-align:center;background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm)">
-          <div style="display:flex;justify-content:center;margin-bottom:10px;color:#16A34A">${ic('check','w-10 h-10')}</div>
-          <div class="fd" style="font-size:17px;font-weight:800;color:var(--c-text)">${sel>today?'Nothing scheduled':'All clear'}</div>
-          <p style="font-size:13px;color:var(--c-text-2);margin-top:6px">${sel>today?'No checklists for this date':isAdmin()&&DB.checklists.length?'You are not assigned to any checklist. Go to Checklists → edit → assign yourself.':'No checklists scheduled'}</p>
-          ${isAdmin()&&DB.checklists.length?`<div style="margin-top:14px;display:flex;justify-content:center">${btnP('Go to Checklists',"App.go('checklists')")}</div>`:''}
+      :`<div class="ui-card" style="padding:46px 20px;text-align:center">
+          <div style="width:58px;height:58px;border-radius:var(--r-lg);background:var(--c-brand-soft);color:var(--c-brand-ink);display:grid;place-items:center;margin:0 auto 14px">${ic('check','w-7 h-7')}</div>
+          <div class="fd" style="font-size:16.5px;font-weight:800;color:var(--c-text)">${sel>today?'Nothing scheduled':'All clear'}</div>
+          <p style="font-size:13px;color:var(--c-text-3);margin-top:5px;max-width:340px;margin-left:auto;margin-right:auto;line-height:1.55">${sel>today?'No checklists for this date':isAdmin()&&DB.checklists.length?'You are not assigned to any checklist. Go to Checklists → edit → assign yourself.':'No checklists scheduled'}</p>
+          ${isAdmin()&&DB.checklists.length?`<div style="margin-top:16px;display:flex;justify-content:center">${btnP('Go to Checklists',"App.go('checklists')")}</div>`:''}
         </div>`}
   </div></div>`;
 }
@@ -8007,10 +8008,11 @@ function _myLeaveView(){
     const b=_balanceReadonly(u.id,lt.id,yr);
     const rem=_balRemaining(b);const ent=_r2((b.entitled||0)+(b.carriedIn||0));
     const pct=ent>0?Math.min(100,Math.round((rem/ent)*100)):0;
-    return `<div class="ui-card" style="padding:16px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;color:var(--c-text-2)">${esc(lt.name)}</div>
-      <div class="fd" style="font-size:26px;font-weight:800;color:var(--c-text);line-height:1">${rem}<span style="font-size:13px;color:var(--c-text-3);font-weight:600"> / ${ent} days</span></div>
-      <div style="height:6px;background:var(--c-border);border-radius:3px;overflow:hidden;margin-top:10px"><div style="height:100%;width:${pct}%;background:var(--c-brand);border-radius:3px"></div></div>
+    const _acc=pct>50?'var(--c-brand)':pct>20?'var(--c-warn)':'var(--c-danger)';
+    return `<div class="ui-card" style="padding:16px;border-top:3px solid ${_acc}">
+      <div style="font-size:12.5px;font-weight:700;margin-bottom:8px;color:var(--c-text-2)">${esc(lt.name)}</div>
+      <div class="fd" style="font-size:28px;font-weight:800;color:var(--c-text);line-height:1">${rem}<span style="font-size:13px;color:var(--c-text-3);font-weight:600"> / ${ent} days</span></div>
+      <div style="height:6px;background:var(--c-border);border-radius:3px;overflow:hidden;margin-top:10px"><div style="height:100%;width:${pct}%;background:${_acc};border-radius:3px;transition:width .4s"></div></div>
       <div style="font-size:11.5px;color:var(--c-text-3);margin-top:8px">Used ${b.used||0} · Pending ${b.pending||0}${b.carriedIn?(' · Carried '+b.carriedIn):''}</div>
     </div>`;
   }).join('');
