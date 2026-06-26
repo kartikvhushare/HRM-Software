@@ -2828,7 +2828,11 @@ function deptsPage(){
     if(!d){S.filters.deptSel=null;return deptsPage();}
     const dUsers=DB.users.filter(u=>u.department===d.name);
     const dCls=DB.checklists.filter(c=>c.department===d.name);
-    const TABS=[['docs',ic('folder','w-4 h-4')+'Documents'],['users',ic('users','w-4 h-4')+'Users'],['checklists',ic('check','w-4 h-4')+'Checklists']];
+    const dSubs=subDepts(d.id);
+    // Sub-departments only apply to a top-level department (one level of nesting).
+    const isTop=!d.parentId||!_deptById(d.parentId);
+    const TABS=[...(isTop?[['subdepts',ic('dept','w-4 h-4')+'Sub-departments']]:[]),['docs',ic('folder','w-4 h-4')+'Documents'],['users',ic('users','w-4 h-4')+'Users'],['checklists',ic('check','w-4 h-4')+'Checklists']];
+    const stab2=TABS.some(t=>t[0]===stab)?stab:TABS[0][0];
     return'<div class="fade">'
       // Back bar
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">'
@@ -2840,18 +2844,29 @@ function deptsPage(){
       +'</div>'
       // Sub-tabs
       +'<div class="ui-tabs" style="margin-bottom:16px">'
-      +TABS.map(([k,l])=>'<button class="ui-tab'+(stab===k?' on':'')+'" onclick="App._setDeptTab(this.dataset.k)" data-k="'+k+'">'+l+'</button>').join('')
+      +TABS.map(([k,l])=>'<button class="ui-tab'+(stab2===k?' on':'')+'" onclick="App._setDeptTab(this.dataset.k)" data-k="'+k+'">'+l+'</button>').join('')
       +'</div>'
       // Tab content
-      +(stab==='docs'?_scopeDocsTab('dept',d.name):'')
-      +(stab==='users'
+      +(stab2==='subdepts'
+        ?('<div>'
+          +(isAdmin()?'<div style="margin-bottom:14px">'+btnP('Add sub-department',"App.editDept(null,'"+d.id+"')",'plus')+'</div>':'')
+          +(dSubs.length
+            ?('<div class="space-y-2">'+dSubs.map(sd=>{
+                const su=DB.users.filter(u=>u.department===sd.name).length;
+                return'<div style="display:flex;align-items:center;gap:12px;background:#fff;border-radius:14px;border:1px solid #ECEDF0;padding:12px 14px"><div style="width:36px;height:36px;border-radius:10px;background:#ECFDF5;display:grid;place-items:center;flex-shrink:0">'+ic('dept','w-4 h-4 text-brand-600')+'</div><div style="flex:1"><div style="font-size:14px;font-weight:600">'+esc(sd.name)+'</div><div style="font-size:12px;color:#9CA3AF">'+su+' user'+(su!==1?'s':'')+'</div></div>'+(isAdmin()?'<div style="display:flex;gap:4px"><button onclick="App.editDept(this.dataset.id)" data-id="'+sd.id+'" aria-label="Edit" style="width:30px;height:30px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;border:none;background:transparent;cursor:pointer">'+ic('edit','w-4 h-4')+'</button><button onclick="App.delDept(this.dataset.id)" data-id="'+sd.id+'" aria-label="Delete" style="width:30px;height:30px;display:grid;place-items:center;border-radius:8px;color:#9CA3AF;border:none;background:transparent;cursor:pointer">'+ic('trash','w-4 h-4')+'</button></div>':'')+'</div>';
+              }).join('')+'</div>')
+            :empty('dept','No sub-departments',isAdmin()?'Click "Add sub-department" to create one inside '+esc(d.name)+'.':'No sub-departments yet.')
+          )+'</div>')
+        :'')
+      +(stab2==='docs'?_scopeDocsTab('dept',d.name):'')
+      +(stab2==='users'
         ?('<div class="space-y-2">'
           +(dUsers.length
             ?dUsers.map(u=>'<div style="display:flex;align-items:center;gap:12px;background:#fff;border-radius:14px;border:1px solid #ECEDF0;padding:12px 14px">'+avatar(u,'w-10 h-10','text-xs')+'<div style="flex:1"><div style="font-size:14px;font-weight:600">'+esc(fullName(u))+'</div><div style="font-size:12px;color:#9CA3AF">'+esc(u.position||u.role)+'</div></div>'+chip(u.status)+'</div>').join('')
             :empty('users','No users','No users assigned to this department.')
           )+'</div>')
         :'')
-      +(stab==='checklists'
+      +(stab2==='checklists'
         ?('<div class="space-y-2">'
           +(dCls.length
             ?dCls.map(c=>'<div style="display:flex;align-items:center;gap:12px;background:#fff;border-radius:14px;border:1px solid #ECEDF0;padding:12px 14px"><div style="width:36px;height:36px;border-radius:10px;background:#F6F7F8;display:grid;place-items:center;flex-shrink:0">'+ic('list','w-4 h-4')+'</div><div style="flex:1"><div style="font-size:14px;font-weight:600">'+esc(c.name)+'</div><div style="font-size:12px;color:#9CA3AF">'+esc(c.frequency)+' · '+(c.assignees||[]).length+' assigned</div></div></div>').join('')
@@ -2885,14 +2900,10 @@ function deptsPage(){
         +'<span><b style="color:#15171C">'+cls.length+'</b> checklists</span>'
         +(docs||folders?'<span><b style="color:#0E9F6E">'+(folders+' folders, '+docs+' files')+'</b></span>':'')
         +'</div>'
-        +((isAdmin()||subDepts(d.id).length)?('<div onclick="event.stopPropagation()" style="margin-top:12px;border-top:1px dashed #ECEDF0;padding-top:10px">'
+        +(subDepts(d.id).length?('<div style="margin-top:12px;border-top:1px dashed #ECEDF0;padding-top:10px">'
           +'<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#9CA3AF;margin-bottom:6px">Sub-departments</div>'
-          +'<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">'
-          +subDepts(d.id).map(sd=>'<span style="display:inline-flex;align-items:center;gap:3px;background:#F3F4F6;border-radius:999px;padding:4px 6px 4px 11px;font-size:11px;font-weight:600;color:#374151">'+esc(sd.name)
-            +(isAdmin()?'<button onclick="App.editDept(this.dataset.id)" data-id="'+sd.id+'" aria-label="Edit sub-department" style="width:18px;height:18px;display:grid;place-items:center;border-radius:5px;border:none;background:transparent;color:#9CA3AF;cursor:pointer">'+ic('edit','w-3 h-3')+'</button>'
-              +'<button onclick="App.delDept(this.dataset.id)" data-id="'+sd.id+'" aria-label="Delete sub-department" style="width:18px;height:18px;display:grid;place-items:center;border-radius:5px;border:none;background:transparent;color:#9CA3AF;cursor:pointer">'+ic('x','w-3 h-3')+'</button>':'')
-            +'</span>').join('')
-          +(isAdmin()?'<button onclick="App.editDept(null,this.dataset.pid)" data-pid="'+d.id+'" style="display:inline-flex;align-items:center;gap:4px;background:#ECFDF5;border:1px dashed #6EE7B7;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:700;color:#0E9F6E;cursor:pointer">'+ic('plus','w-3 h-3')+'Sub-dept</button>':'')
+          +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
+          +subDepts(d.id).map(sd=>'<span style="background:#F3F4F6;border-radius:999px;padding:4px 11px;font-size:11px;font-weight:600;color:#374151">'+esc(sd.name)+'</span>').join('')
           +'</div></div>'):'')
         +'<div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px">'
         +'<div style="display:flex;-space-x-1.5">'+us.slice(0,5).map(u=>'<div style="border-radius:50%;ring:2px solid #fff;margin-right:-6px">'+avatar(u,'w-6 h-6','text-[9px]')+'</div>').join('')+'</div>'
@@ -4866,8 +4877,18 @@ function qCard(q){
   }
 
 // Board view — questions grouped by Department › Sub-department (requirement #3).
+// Collapse state for the Questions board (transient UI state on S.filters).
+function _qColl(){return S.filters.qCollapsed||(S.filters.qCollapsed=[]);}
+function _qIsColl(key){return _qColl().includes(key);}
+App._togQGroup=(key)=>{const arr=_qColl();const i=arr.indexOf(key);if(i>=0)arr.splice(i,1);else arr.push(key);App._filterQuestions(S.filters.qSearch||'');};
+App._qExpandAll=()=>{S.filters.qCollapsed=[];App._filterQuestions(S.filters.qSearch||'');};
+App._qCollapseAll=()=>{
+  const all=[];(DB.questions||[]).forEach(q=>{const d=(q.department||'').trim()||'__none__';if(!all.includes('d:'+d))all.push('d:'+d);});
+  S.filters.qCollapsed=all;App._filterQuestions(S.filters.qSearch||'');
+};
 function _renderQGrouped(list){
   if(!list.length)return empty('help','No questions yet','Create questions or upload a CSV template.');
+  const searching=!!(S.filters.qSearch||'').trim(); // during search, force-expand so matches are visible
   const byDept={};
   list.forEach(q=>{
     const d=(q.department||'').trim()||'__none__';
@@ -4878,27 +4899,39 @@ function _renderQGrouped(list){
   const order=topDepts().map(d=>d.name).filter(n=>byDept[n]);
   Object.keys(byDept).forEach(d=>{if(d!=='__none__'&&!order.includes(d))order.push(d);});
   if(byDept['__none__'])order.push('__none__');
-  let html='';
+  const chev=open=>`<span style="display:inline-flex;color:var(--c-text-3);transition:transform .2s;transform:rotate(${open?90:0}deg)">${ic('chevR','w-4 h-4')}</span>`;
+  let html='<div style="display:flex;justify-content:flex-end;gap:6px;margin-bottom:4px">'
+    +btn('Expand all','App._qExpandAll()',{variant:'ghost',size:'sm'})
+    +btn('Collapse all','App._qCollapseAll()',{variant:'ghost',size:'sm'})+'</div>';
   order.forEach(dName=>{
     const subs=byDept[dName];
     const dLabel=dName==='__none__'?'Uncategorized':dName;
     const total=Object.values(subs).reduce((a,arr)=>a+arr.length,0);
-    html+=`<div style="margin-top:18px;margin-bottom:8px;display:flex;align-items:center;gap:8px">`
+    const dKey='d:'+dName;
+    const dOpen=searching||!_qIsColl(dKey);
+    html+=`<div data-k="${esc(dKey)}" onclick="App._togQGroup(this.dataset.k)" style="margin-top:14px;margin-bottom:8px;display:flex;align-items:center;gap:8px;cursor:pointer;background:var(--c-surface-2);border:1px solid var(--c-border);border-radius:var(--r-md);padding:10px 12px">`
+      +chev(dOpen)
       +`<span style="display:inline-flex;color:#0E9F6E">${ic('dept','w-4 h-4')}</span>`
       +`<span style="font-size:14px;font-weight:800;color:var(--c-text)">${esc(dLabel)}</span>`
-      +`<span style="font-size:11px;font-weight:700;color:#6B7280;background:var(--c-surface-2);border-radius:999px;padding:1px 9px">${total}</span></div>`;
+      +`<span style="font-size:11px;font-weight:700;color:#6B7280;background:var(--c-surface);border-radius:999px;padding:1px 9px">${total}</span></div>`;
+    if(!dOpen)return;
     const subOrder=subDeptsOfName(dName).map(s=>s.name).filter(n=>subs[n]);
     Object.keys(subs).forEach(s=>{if(s!=='__none__'&&!subOrder.includes(s))subOrder.push(s);});
     if(subs['__none__'])subOrder.push('__none__');
+    html+='<div style="padding-left:10px;border-left:2px solid var(--c-border);margin-left:6px">';
     subOrder.forEach(sName=>{
       const qs=subs[sName];
       const sLabel=sName==='__none__'?'(no sub-department)':sName;
-      html+=`<div style="margin:10px 0 6px 4px;display:flex;align-items:center;gap:7px">`
+      const sKey='s:'+dName+'␟'+sName;
+      const sOpen=searching||!_qIsColl(sKey);
+      html+=`<div data-k="${esc(sKey)}" onclick="App._togQGroup(this.dataset.k)" style="margin:10px 0 6px;display:flex;align-items:center;gap:7px;cursor:pointer">`
+        +chev(sOpen)
         +`<span style="width:6px;height:6px;border-radius:50%;background:#0E9F6E"></span>`
         +`<span style="font-size:12px;font-weight:700;color:var(--c-text-2)">${esc(sLabel)}</span>`
         +`<span style="font-size:10px;color:var(--c-text-3)">${qs.length} question${qs.length!==1?'s':''}</span></div>`;
-      html+='<div class="space-y-2" style="margin-bottom:8px">'+qs.map(q=>qCard(q)).join('')+'</div>';
+      if(sOpen)html+='<div class="space-y-2" style="margin:0 0 8px 4px">'+qs.map(q=>qCard(q)).join('')+'</div>';
     });
+    html+='</div>';
   });
   return html;
 }
