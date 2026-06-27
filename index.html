@@ -1607,13 +1607,19 @@ const errorState=(t='Something went wrong',s='',retry='')=>`<div style="text-ali
 /* ===== MODAL ===== */
 let _modalLastFocus=null;
 function openModal(html,size='max-w-lg'){
-  let m=$('#modal');if(!m){m=document.createElement('div');m.id='modal';document.body.appendChild(m);}
+  let m=$('#modal');
+  // In-place re-render detection: if a dialog is already open, this is a rebuild (a field inside the
+  // modal triggered a re-render). Preserve its scroll position and skip the auto-focus so the view
+  // doesn't jump back to the top on every change.
+  const _prevDlg=m&&m.firstElementChild, _reentry=!!_prevDlg, _prevScroll=_prevDlg?_prevDlg.scrollTop:0;
+  if(!m){m=document.createElement('div');m.id='modal';document.body.appendChild(m);}
   _modalLastFocus=document.activeElement;
   m.className='fixed inset-0 z-[100] flex items-end md:items-center justify-center p-0 md:p-6';m.style.cssText='background:rgba(10,11,14,0.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)';
   m.innerHTML=`<div role="dialog" aria-modal="true" aria-label="Dialog" class="pop w-full ${size} md:rounded-[20px] rounded-t-[22px] max-h-[92vh] overflow-y-auto" style="background:var(--c-surface);border:1px solid var(--c-border);box-shadow:var(--sh-pop)">${html}</div>`;
   m.onclick=e=>{if(e.target===m)closeModal();};
   // Focus management: focus the dialog (or first input), Esc to close, basic focus trap.
   const dlg=m.firstElementChild;
+  if(_reentry&&_prevScroll)dlg.scrollTop=_prevScroll; // keep scroll position across the rebuild
   m.onkeydown=e=>{
     if(e.key==='Escape'){closeModal();return;}
     if(e.key!=='Tab')return;
@@ -1622,7 +1628,8 @@ function openModal(html,size='max-w-lg'){
     if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
     else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
   };
-  setTimeout(()=>{const fi=dlg.querySelector('input,select,textarea,button');(fi||dlg).focus&&(fi||dlg).focus();},30);
+  // Only auto-focus on a FRESH open — re-renders keep the user where they were (no scroll jump).
+  if(!_reentry)setTimeout(()=>{const fi=dlg.querySelector('input,select,textarea,button');try{(fi||dlg).focus({preventScroll:true});}catch(_){(fi||dlg).focus&&(fi||dlg).focus();}},30);
 }
 const closeModal=()=>{const m=$('#modal');if(m&&m.remove)m.remove();try{if(_modalLastFocus&&_modalLastFocus.focus)_modalLastFocus.focus();}catch(e){}_modalLastFocus=null;};
 /* modalShell({title,body,footer,size}) — consistent header(X)+scroll body+footer row.
