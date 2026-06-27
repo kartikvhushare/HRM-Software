@@ -366,6 +366,7 @@ button:focus-visible{outline:none;box-shadow:var(--ring);border-radius:8px}
 }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -533,6 +534,8 @@ const _DAY_MS=24*60*60*1000;
 function _cutoff30ISO(){return new Date(Date.now()-30*_DAY_MS).toISOString();}
 function _cutoff30Date(){return _cutoff30ISO().slice(0,10);}
 function _mapTk(rows){return(rows||[]).map(t=>({id:t.id,title:t.title||'',description:t.description||'',priority:t.priority||'Medium',status:t.status||'Open',assignedTo:t.assigned_to||null,createdBy:t.created_by||null,checklistId:t.checklist_id||null,questionId:t.question_id||null,questionText:t.question_text||'',answerGiven:t.answer_given||'',submitterId:t.submitter_id||null,date:t.date||null,createdAt:t.created_at,resolvedAt:t.resolved_at||null,resolveNote:t.resolve_note||'',viewedBy:t.viewed_by||[]}));}
+function _mOKR(rows){return(rows||[]).map(o=>({id:o.id,questionId:o.question_id||null,objective:o.objective||'',target:(o.target===null||o.target===undefined)?null:o.target,targetMeta:o.target_meta||{},targetMode:o.target_mode||'per_period',aggregation:o.aggregation||'avg',direction:o.direction||'up',periodType:o.period_type||'quarter',periodStart:o.period_start||null,periodEnd:o.period_end||null,scope:o.scope||{type:'user',ids:[]},ownerId:o.owner_id||null,ownerHistory:o.owner_history||[],rollup:o.rollup||{},parentOkrId:o.parent_okr_id||null,childOkrIds:o.child_okr_ids||[],status:o.status||'Active',createdBy:o.created_by||null,createdAt:o.created_at}));}
+function _mOKRPeriod(rows){return(rows||[]).map(p=>({id:p.id,okrId:p.okr_id,periodLabel:p.period_label||'',periodStart:p.period_start||null,periodEnd:p.period_end||null,finalValue:(p.final_value===null||p.final_value===undefined)?null:p.final_value,attainmentPct:(p.attainment_pct===null||p.attainment_pct===undefined)?null:p.attainment_pct,snapshot:p.snapshot||{},closedBy:p.closed_by||null,closedAt:p.closed_at,approvalId:p.approval_id||null}));}
 function _roleCtx(){const _uid=S.uid;const _isAdmin=isAdmin();const _isSubAdmin=isSubAdmin();const _isMgr=isMgr();const _teamIds=(_isMgr&&!_isAdmin)?new Set([_uid,...subTree(_uid).map(u=>u.id)]):null;return{_uid,_isAdmin,_isSubAdmin,_isMgr,_teamIds};}
 // Apply helpers — shared by the startup bulk load AND the lazy per-tab loaders so the
 // role-based visibility filtering can never drift between the two paths.
@@ -873,6 +876,19 @@ async function loadFromSB(){
       _applyTickets(data);saveDB();rr();
     }).catch(e=>console.error('[TK] fetch failed:',e.message));
 
+  // ── OKRs + period snapshots: loaded defensively — these tables may not exist yet, in which
+  //    case the query resolves with an error, we leave DB.okrs/[] empty, and nothing else breaks.
+  sb.from('okrs').select('*').order('created_at',{ascending:false})
+    .then(({data,error})=>{
+      if(error){console.warn('[OKR] load skipped:',error.message);return;}
+      DB.okrs=_mOKR(data);saveDB();rr();
+    }).catch(e=>console.warn('[OKR] fetch failed:',e.message));
+  sb.from('okr_periods').select('*').order('closed_at',{ascending:false})
+    .then(({data,error})=>{
+      if(error){console.warn('[OKR] periods load skipped:',error.message);return;}
+      DB.okrPeriods=_mOKRPeriod(data);saveDB();rr();
+    }).catch(e=>console.warn('[OKR] periods fetch failed:',e.message));
+
   // ── HRM (Approach A): config singleton, reference tables fully, attendance windowed (90d). ──
   // RLS restricts rows server-side; the client maps whatever comes back. Runs async (non-blocking)
   // so a missing/locked HRM table never stalls the rest of the app. The _savedHrm snapshot above
@@ -965,11 +981,143 @@ async function _sync(){try{
     //   employees never fire RLS-rejected upserts (mirrors the role_profiles/SOP admin-gate). Push only the rows
     //   the caller may write under RLS (scoped/elevated) so a manager-of-team never gets rejected for foreign rows.
     (()=>{if(!can('scheduling','manage'))return Promise.resolve();const f=scopeFilter('scheduling');const rows=(DB.shifts||[]).filter(s=>isAdmin()||isHR()||f(s.userId)||s.createdBy===S.uid);return rows.length?sb.from('shifts').upsert(rows.map(s=>({id:s.id,user_id:s.userId,date:s.date,start:s.start,end:s.end,location_id:s.locationId||null,note:s.note||'',status:s.status||'draft',published_at:s.publishedAt||null,created_by:s.createdBy||null,created_at:s.createdAt||new Date().toISOString()})),{onConflict:'id'}):Promise.resolve();})(),
+    (DB.okrs&&DB.okrs.length?sb.from('okrs').upsert(DB.okrs.map(o=>({id:o.id,question_id:o.questionId||null,objective:o.objective||'',target:(o.target===null||o.target===undefined)?null:o.target,target_meta:o.targetMeta||{},target_mode:o.targetMode||'per_period',aggregation:o.aggregation||'avg',direction:o.direction||'up',period_type:o.periodType||'quarter',period_start:o.periodStart||null,period_end:o.periodEnd||null,scope:o.scope||{type:'user',ids:[]},owner_id:o.ownerId||null,owner_history:o.ownerHistory||[],rollup:o.rollup||{},parent_okr_id:o.parentOkrId||null,child_okr_ids:o.childOkrIds||[],status:o.status||'Active',created_by:o.createdBy||null,created_at:o.createdAt||new Date().toISOString()})),{onConflict:'id'}):Promise.resolve()),
+    (DB.okrPeriods&&DB.okrPeriods.length?sb.from('okr_periods').upsert(DB.okrPeriods.map(p=>({id:p.id,okr_id:p.okrId,period_label:p.periodLabel||'',period_start:p.periodStart||null,period_end:p.periodEnd||null,final_value:(p.finalValue===null||p.finalValue===undefined)?null:p.finalValue,attainment_pct:(p.attainmentPct===null||p.attainmentPct===undefined)?null:p.attainmentPct,snapshot:p.snapshot||{},closed_by:p.closedBy||null,closed_at:p.closedAt||new Date().toISOString(),approval_id:p.approvalId||null})),{onConflict:'id'}):Promise.resolve()),
   ]);
   // C1: surface persistence failures (RLS rejections / network) to the user, debounced. Labels MUST
   //   match the upsert order above. Resolved-Promise placeholders (gated/empty tables) report no error.
-  _reportSyncResults(results,['departments','locations','checklists','submissions','approvals','audit log','notifications','feedback','folders','documents','questions','tickets','HR config','leave types','holidays','leave requests','leave balances','attendance','employee HR data','role profiles','shifts']);
+  _reportSyncResults(results,['departments','locations','checklists','submissions','approvals','audit log','notifications','feedback','folders','documents','questions','tickets','HR config','leave types','holidays','leave requests','leave balances','attendance','employee HR data','role profiles','shifts','OKRs','OKR periods']);
 }catch(e){console.warn('[Bridge sync error]',e.message);}}
+
+/* ===== OKR COMPUTE ENGINE ===== */
+/* Pure read-only helpers over DB.submissions / DB.questions / DB.okrs. No DOM, no writes. */
+function _okrValueOf(qType,response){
+  if(response===null||response===undefined||response==='')return null;
+  if(qType==='number'){const n=parseFloat(response);return isFinite(n)?n:null;}
+  if(qType==='passfail')return response==='Pass'?1:response==='Fail'?0:null;
+  if(qType==='yesno')return response==='Yes'?1:response==='No'?0:null;
+  if(qType==='tick')return response==='Done'?1:response==='Not done'?0:null;
+  return null;
+}
+function _okrIsPositive(qType,response){
+  if(qType==='passfail')return response==='Pass';
+  if(qType==='yesno')return response==='Yes';
+  if(qType==='tick')return response==='Done';
+  if(qType==='number'){const n=parseFloat(response);return isFinite(n)&&n>0;}
+  return false;
+}
+function _okrPeriodWindow(okr,override){
+  if(override&&override.start&&override.end)return{start:override.start,end:override.end};
+  if(okr.periodStart&&okr.periodEnd)return{start:okr.periodStart,end:okr.periodEnd};
+  const now=new Date(),y=now.getFullYear(),iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  if(okr.periodType==='month'){const s=new Date(y,now.getMonth(),1),e=new Date(y,now.getMonth()+1,0);return{start:iso(s),end:iso(e)};}
+  if(okr.periodType==='year')return{start:y+'-01-01',end:y+'-12-31'};
+  if(okr.periodType==='quarter'){const q=Math.floor(now.getMonth()/3),sm=q*3,s=new Date(y,sm,1),e=new Date(y,sm+3,0);return{start:iso(s),end:iso(e)};}
+  return{start:'0000-01-01',end:'9999-12-31'};
+}
+function _okrScopeUserIds(scope){
+  const t=scope&&scope.type,ids=(scope&&scope.ids)||[];
+  if(t==='org'||!t)return null;
+  if(t==='user'||t==='users')return new Set(ids);
+  if(t==='department'){
+    const names=new Set();
+    ids.forEach(id=>{const d=(DB.departments||[]).find(x=>x.id===id);names.add(d?d.name:id);});
+    return new Set((DB.users||[]).filter(u=>names.has(u.department)).map(u=>u.id));
+  }
+  if(t==='location')return null;
+  return new Set(ids);
+}
+function _okrSeries(okr,win){
+  if(!okr.questionId)return[];
+  const q=(DB.questions||[]).find(x=>x.id===okr.questionId),qType=q?q.type:'number';
+  const scope=okr.scope||{type:'user',ids:[]},roll=okr.rollup||{};
+  let userSet=null,locSet=null;
+  if(roll.mode==='auto_scope'&&Array.isArray(roll.members)&&roll.members.length)userSet=new Set(roll.members);
+  else if(scope.type==='location')locSet=new Set(scope.ids||[]);
+  else userSet=_okrScopeUserIds(scope);
+  // Branch (location) is determined by the CHECKLIST a submission belongs to — a checklist may serve
+  // several branches via locationIds, so a submission counts toward a location OKR if its checklist
+  // serves that branch. Build a checklistId→locationIds map once for the location filter.
+  let _clLoc=null;
+  if(locSet){_clLoc={};(DB.checklists||[]).forEach(c=>{_clLoc[c.id]=c.locationIds||[];});}
+  const pts=[];
+  (DB.submissions||[]).forEach(s=>{
+    if(s.date<win.start||s.date>win.end)return;
+    if(userSet&&!userSet.has(s.userId))return;
+    if(locSet){const _locs=_clLoc[s.checklistId]||[];if(!_locs.some(L=>locSet.has(L)))return;}
+    const r=(s.questionResponses||[]).find(x=>x.questionId===okr.questionId);
+    if(!r||r.response===null||r.response===undefined||r.response==='')return;
+    pts.push({date:s.date,userId:s.userId,response:r.response,value:_okrValueOf(qType,r.response),positive:_okrIsPositive(qType,r.response),comment:r.comment||'',photos:r.photos||(r.photo?[r.photo]:[])});
+  });
+  pts.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
+  return pts;
+}
+function _okrAggregate(pts,agg){
+  const nums=pts.map(p=>p.value).filter(v=>v!==null&&v!==undefined&&isFinite(v));
+  switch(agg){
+    case 'sum':return nums.reduce((a,b)=>a+b,0);
+    case 'min':return nums.length?Math.min(...nums):null;
+    case 'max':return nums.length?Math.max(...nums):null;
+    case 'count':return pts.length;
+    case 'latest':return pts.length?pts[pts.length-1].value:null;
+    case 'pct_positive':{const tot=pts.length;if(!tot)return null;const pos=pts.filter(p=>p.positive).length;return Math.round((pos/tot)*1000)/10;}
+    case 'distribution':{const m={};pts.forEach(p=>{const k=String(p.response);m[k]=(m[k]||0)+1;});return m;}
+    case 'avg':default:return nums.length?nums.reduce((a,b)=>a+b,0)/nums.length:null;
+  }
+}
+function _okrCross(items,cross){
+  const vals=items.map(i=>i.v).filter(v=>v!==null&&isFinite(v));
+  if(!vals.length)return null;
+  switch(cross){
+    case 'sum':return vals.reduce((a,b)=>a+b,0);
+    case 'min':return Math.min(...vals);
+    case 'max':return Math.max(...vals);
+    case 'weighted':{let sw=0,sv=0;items.forEach(i=>{if(i.v!==null&&isFinite(i.v)){sv+=i.v*(i.w||1);sw+=(i.w||1);}});return sw?sv/sw:null;}
+    case 'avg':default:return vals.reduce((a,b)=>a+b,0)/vals.length;
+  }
+}
+function _okrAttainment(current,target,direction){
+  if(current===null||current===undefined||target===null||target===undefined||target==='')return null;
+  if(typeof current!=='number'||!isFinite(current))return null;
+  const t=parseFloat(target);if(!isFinite(t)||t===0)return null;
+  let pct;
+  if(direction==='down')pct=current<=t?100:Math.max(0,(t/current)*100);
+  else pct=(current/t)*100;
+  return Math.round(pct*10)/10;
+}
+function _okrStatus(pct){if(pct===null||pct===undefined)return 'No data';if(pct>=90)return 'On track';if(pct>=60)return 'At risk';return 'Off track';}
+function computeOKR(okr,opts){
+  opts=opts||{};
+  const seen=opts._seen||new Set();
+  const win=_okrPeriodWindow(okr,opts.period);
+  if(seen.has(okr.id))return{window:win,series:[],current:null,target:okr.target==null?null:okr.target,attainmentPct:null,status:'No data',breakdown:[],count:0};
+  seen.add(okr.id);
+  const childOpts=Object.assign({},opts,{_seen:seen});
+  const roll=okr.rollup||{};
+  let current=null,series=[],breakdown=[];
+  if(roll.mode==='manual'){
+    current=(roll.manualValue===null||roll.manualValue===undefined||roll.manualValue==='')?null:parseFloat(roll.manualValue);
+    if(!isFinite(current))current=null;
+  } else if(roll.mode==='auto_children'&&Array.isArray(okr.childOkrIds)&&okr.childOkrIds.length){
+    const childRes=[];
+    okr.childOkrIds.forEach(cid=>{
+      const child=(DB.okrs||[]).find(o=>o.id===cid);if(!child)return;
+      const cc=computeOKR(child,childOpts);
+      const w=(roll.weights&&roll.weights[cid])||1;
+      childRes.push({id:cid,current:cc.current,attainment:cc.attainmentPct,weight:w});
+      breakdown.push({memberId:cid,value:cc.current,attainment:cc.attainmentPct,weight:w});
+    });
+    if(roll.crossAgg==='pct_meeting_target'){
+      const tot=childRes.length,met=childRes.filter(c=>c.attainment!==null&&c.attainment>=100).length;
+      current=tot?Math.round((met/tot)*1000)/10:null;
+    } else current=_okrCross(childRes.map(c=>({v:c.current,w:c.weight})),roll.crossAgg);
+  } else {
+    series=_okrSeries(okr,win);
+    current=_okrAggregate(series,okr.aggregation);
+  }
+  const attainmentPct=(okr.aggregation==='distribution'||(typeof current!=='number'))?null:_okrAttainment(current,okr.target,okr.direction);
+  return{window:win,series:series,current:current,target:okr.target==null?null:okr.target,attainmentPct:attainmentPct,status:_okrStatus(attainmentPct),breakdown:breakdown,count:series.length};
+}
 
 /* ===== STATUS CHIPS ===== */
 const CHIP_STYLE={"On Time":"background:#ECFDF5;color:#047857","Submitted":"background:#ECFDF5;color:#047857","Pending":"background:#FFFBEB;color:#B45309","Late":"background:#FFF1F2;color:#BE123C","Pending Approval":"background:#FFF7ED;color:#C2410C","Rejected":"background:#FFF1F2;color:#9F1239","Active":"background:#ECFDF5;color:#047857","Inactive":"background:#F6F7F8;color:#9CA3AF","Approved":"background:#ECFDF5;color:#047857","Editing":"background:#EFF6FF;color:#1D4ED8","Upcoming":"background:#FAF5FF;color:#7E22CE","Draft":"background:#F6F7F8;color:#9CA3AF","Open":"background:#FFF7ED;color:#C2410C","In Progress":"background:#EFF6FF;color:#1D4ED8","Resolved":"background:#ECFDF5;color:#047857","Closed":"background:#F6F7F8;color:#9CA3AF"};
@@ -980,7 +1128,7 @@ const chip=s=>{const st=CHIP_STYLE[s]||'background:#FFFBEB;color:#B45309';const 
 /* ===== DATA MODEL ===== */
 let DB={
   departments:[],
-  users:[],checklists:[],submissions:[],approvals:[],feedback:[],folders:[],documents:[],locations:[],audit:[],notifications:[],questions:[],tickets:[],
+  users:[],checklists:[],submissions:[],approvals:[],feedback:[],folders:[],documents:[],locations:[],audit:[],notifications:[],questions:[],tickets:[],okrs:[],okrPeriods:[],
   // ── HRM (Attendance & Leave) — FRONTEND-ONLY, never added to _sync()/loadFromSB() table lists ──
   hrmConfig:{},     // company/country policy profiles
   attendance:[],    // attendance day records (one per user per date)
@@ -1513,9 +1661,9 @@ function _recoverEditingSubmissions(){
   });
 }
 /* ===== NAVIGATION ===== */
-const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control']];
+const NAV_ADM=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['announcements','msg','Announcements'],['users','users','Users'],['hierarchy','tree','Hierarchy'],['checklists','list','Create Checklist'],['allcl','list','All Checklists'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['hrmconfig','cog','HR Config'],['locations','pin','Locations'],['departments','dept','Departments'],['settings','cog','Settings'],['audit','audit','Audit'],['accesscontrol','shield','Access Control'],['okr','chart','OKRs']];
 const NAV_USR=[['dashboard','grid','Home'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['notifications','bell','Notifications']];
-const NAV_MGR=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['teamview','users','Team'],['users','user','My Users'],['checklists','list','Create Checklist'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics']];
+const NAV_MGR=[['dashboard','grid','Dashboard'],['mychecklists','check','My Checklists'],['attendance','clock','Attendance'],['leave','approve','Leave'],['tickets','ticket','Tickets'],['teamview','users','Team'],['users','user','My Users'],['checklists','list','Create Checklist'],['questions','help','Questions'],['approvals','approve','Approvals'],['notifications','bell','Notifications'],['analytics','chart','Analytics'],['hrmanalytics','chart','HRM Analytics'],['okr','chart','OKRs']];
 const MOB_ADM=['dashboard','mychecklists','attendance','notifications','more'];
 // Employee bottom-nav: Home (clock widget on top) + Attendance (clock-in in ≤1 tap) front-and-centre.
 const MOB_USR=['dashboard','attendance','mychecklists','notifications','more'];
@@ -1580,6 +1728,10 @@ const navFor=()=>{
     const after=base.findIndex(n=>n[0]==='users')>-1?base.findIndex(n=>n[0]==='users'):base.findIndex(n=>n[0]==='teamview');
     base.splice(after>-1?after+1:base.length,0,['hierarchy','tree','Hierarchy']);
   }
+  // OKRs: managers/admins already have it via NAV_MGR/NAV_ADM. A regular user who OWNS an OKR sees the tab.
+  if(!isAdmin()&&!isMgr()&&!isSubAdmin()&&(DB.okrs||[]).some(o=>o.ownerId===S.uid)){
+    if(!base.find(n=>n[0]==='okr')){const after=base.findIndex(n=>n[0]==='tickets');base.splice(after>-1?after+1:base.length,0,['okr','chart','OKRs']);}
+  }
   return base;
 };
 /* ───── Grouped nav (presentation only) ─────
@@ -1594,7 +1746,7 @@ const NAV_SECTION_OF={
   // People
   users:'People',teamview:'People',hierarchy:'People',
   // Insights
-  analytics:'Insights',hrmanalytics:'Insights',
+  analytics:'Insights',hrmanalytics:'Insights',okr:'Insights',
   // Setup
   hrmconfig:'Setup',locations:'Setup',departments:'Setup',settings:'Setup',audit:'Setup',accesscontrol:'Setup',
 };
@@ -1832,8 +1984,273 @@ function pageContent(){
   if(r==='schedule'||r==='myschedule'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   // Expenses feature retired — redirect any lingering #expenses deep-link to the home dashboard.
   if(r==='expenses'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  if(r==='okr'){if(isAdmin()||isSubAdmin()||isMgr()||(DB.okrs||[]).some(o=>o.ownerId===S.uid))return okrPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   return empty('grid','Not found','');
 }
+
+/* ===== OKR / KPI TAB (UI) ===== */
+const _OKR_AGGS=[['avg','Average'],['sum','Total'],['latest','Latest value'],['count','Count of entries'],['min','Minimum'],['max','Maximum'],['pct_positive','% positive (Pass/Yes/Done)'],['distribution','Distribution']];
+function _okrCanManage(){return isAdmin()||isSubAdmin()||isMgr();}
+function _okrVisible(){
+  const all=DB.okrs||[];
+  if(isAdmin()||isSubAdmin())return all;
+  if(isMgr()){
+    const team=new Set([S.uid,...subTree(S.uid).map(u=>u.id)]);
+    return all.filter(o=>o.ownerId===S.uid||team.has(o.ownerId)||o.createdBy===S.uid||((o.scope&&(o.scope.type==='user'||o.scope.type==='users'))&&(o.scope.ids||[]).some(id=>team.has(id))));
+  }
+  return all.filter(o=>o.ownerId===S.uid);
+}
+function _okrScopeLabel(o){
+  const roll=o.rollup||{};
+  if(roll.mode==='manual')return 'Manual entry';
+  if(roll.mode==='auto_children'){const n=(o.childOkrIds||[]).length;return 'Rolls up '+n+' OKR'+(n===1?'':'s');}
+  if(roll.mode==='auto_scope'){const n=(roll.members||[]).length;return 'Team · '+n+' member'+(n===1?'':'s');}
+  const sc=o.scope||{},ids=sc.ids||[];
+  if(sc.type==='org'||!sc.type)return 'Whole company';
+  if(sc.type==='user'||sc.type==='users'){const u=(DB.users||[]).find(x=>x.id===ids[0]);return ids.length<=1?('Individual · '+(u?fullName(u):'—')):('Individuals · '+ids.length);}
+  if(sc.type==='department'){const d=(DB.departments||[]).find(x=>x.id===ids[0]);return 'Department · '+(d?d.name:(ids[0]||'—'));}
+  if(sc.type==='location'){const l=(DB.locations||[]).find(x=>x.id===ids[0]);return 'Branch · '+(l?l.name:(ids[0]||'—'));}
+  return sc.type;
+}
+function _okrPeriodLabel(o){
+  const w=_okrPeriodWindow(o),pt=o.periodType||'quarter';
+  if(pt==='custom')return (o.periodStart||w.start)+' → '+(o.periodEnd||w.end);
+  const d=new Date(w.start+'T00:00:00'),y=d.getFullYear();
+  if(pt==='quarter')return 'Q'+(Math.floor(d.getMonth()/3)+1)+' '+y;
+  if(pt==='month')return d.toLocaleString('en',{month:'short'})+' '+y;
+  if(pt==='year')return String(y);
+  return w.start+' → '+w.end;
+}
+function okrPage(){
+  const list=_okrVisible(),canMng=_okrCanManage();
+  const head=hdr('OKRs & KPIs','Goals measured from your checklist answers',canMng?btnP('New OKR','App._editOKR(null)','plus'):'');
+  if(!list.length)return `<div class="fade">${head}${empty('chart','No OKRs yet',canMng?'Create an OKR to track a metric from your checklist questions.':'No OKRs have been assigned to you yet.')}</div>`;
+  const icBtn='width:28px;height:28px;display:grid;place-items:center;border-radius:8px;color:var(--c-text-3);background:transparent;border:none;cursor:pointer';
+  const pill='font-size:11px;padding:2px 8px;border-radius:20px;background:var(--c-surface-2);color:var(--c-text-2)';
+  const cards=list.map(o=>{
+    const r=computeOKR(o);
+    const owner=(DB.users||[]).find(u=>u.id===o.ownerId);
+    const q=(DB.questions||[]).find(x=>x.id===o.questionId);
+    const cur=(r.current===null||r.current===undefined)?'—':(typeof r.current==='number'?(Math.round(r.current*100)/100):'—');
+    const tgt=(o.target===null||o.target===undefined)?null:o.target;
+    const pct=r.attainmentPct,barW=pct===null?0:Math.max(0,Math.min(100,pct));
+    const barColor=pct===null?'#D1D5DB':(pct>=90?'#0E9F6E':(pct>=60?'#F59E0B':'#EF4444'));
+    const stColor=r.status==='On track'?'#0E9F6E':r.status==='At risk'?'#B45309':r.status==='Off track'?'#BE123C':'#9CA3AF';
+    const actions=canMng?`<div style="display:flex;gap:2px;flex-shrink:0"><button onclick="event.stopPropagation();App._editOKR('${o.id}')" title="Edit" style="${icBtn}">${ic('edit','w-3.5 h-3.5')}</button><button onclick="event.stopPropagation();App._deleteOKR('${o.id}')" title="Delete" style="${icBtn}">${ic('trash','w-3.5 h-3.5')}</button></div>`:'';
+    return `<div onclick="App._okrDetail('${o.id}')" style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:14px;padding:16px;cursor:pointer">
+      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+        <div style="flex:1;min-width:0"><div style="font-size:15px;font-weight:700;color:var(--c-text)">${esc(o.objective||(q?q.text:'Untitled OKR'))}</div>
+        <div style="font-size:12px;color:var(--c-text-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${q?esc(q.text):'question removed'}</div></div>${actions}
+      </div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+        <span style="font-size:24px;font-weight:800;color:var(--c-text)">${cur}</span>
+        ${tgt!==null?`<span style="font-size:13px;color:var(--c-text-2)">/ ${tgt}</span>`:''}
+        ${pct!==null?`<span style="font-size:12px;font-weight:700;color:${stColor};margin-left:auto">${pct}% · ${r.status}</span>`:`<span style="font-size:12px;font-weight:600;color:#9CA3AF;margin-left:auto">No data</span>`}
+      </div>
+      <div style="height:6px;background:var(--c-border);border-radius:3px;overflow:hidden;margin-bottom:10px"><div style="height:100%;width:${barW}%;background:${barColor};border-radius:3px"></div></div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        <span style="${pill}">${esc(_okrScopeLabel(o))}</span>
+        <span style="${pill}">${esc(_okrPeriodLabel(o))}</span>
+        <span style="${pill}">${esc((_OKR_AGGS.find(a=>a[0]===o.aggregation)||['','—'])[1])}</span>
+        <span style="${pill}">${r.count} entr${r.count===1?'y':'ies'}</span>
+        ${owner?`<span style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--c-text-2)">${avatar(owner,'w-5 h-5','text-[9px]')}${esc(fullName(owner))}</span>`:''}
+      </div></div>`;
+  }).join('');
+  return `<div class="fade">${head}<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">${cards}</div></div>`;
+}
+let _okrDetailId=null,_okrDetailOffset=0,_okrChart=null;
+const _okrIso2=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+function _okrShiftWindow(o,offset){
+  const pt=o.periodType||'quarter';
+  if(pt==='custom'||(o.periodStart&&o.periodEnd)){const w=_okrPeriodWindow(o);return{start:w.start,end:w.end,label:_okrPeriodLabel(o),fixed:true};}
+  const now=new Date();let y=now.getFullYear();
+  if(pt==='quarter'){let q=Math.floor(now.getMonth()/3)+offset;y+=Math.floor(q/4);q=((q%4)+4)%4;const s=new Date(y,q*3,1),e=new Date(y,q*3+3,0);return{start:_okrIso2(s),end:_okrIso2(e),label:'Q'+(q+1)+' '+y};}
+  if(pt==='month'){let m=now.getMonth()+offset;y+=Math.floor(m/12);m=((m%12)+12)%12;const s=new Date(y,m,1),e=new Date(y,m+1,0);return{start:_okrIso2(s),end:_okrIso2(e),label:s.toLocaleString('en',{month:'short'})+' '+y};}
+  y+=offset;return{start:y+'-01-01',end:y+'-12-31',label:String(y)};
+}
+App._okrDetail=(id)=>{_okrDetailId=id;_okrDetailOffset=0;App._renderOKRDetail();};
+App._okrDetailShift=(d)=>{_okrDetailOffset+=d;if(_okrDetailOffset>0)_okrDetailOffset=0;App._renderOKRDetail();};
+App._renderOKRDetail=()=>{
+  const o=(DB.okrs||[]).find(x=>x.id===_okrDetailId);if(!o)return;
+  const win=_okrShiftWindow(o,_okrDetailOffset);
+  const r=computeOKR(o,{period:{start:win.start,end:win.end}});
+  const q=(DB.questions||[]).find(x=>x.id===o.questionId);
+  const rows=(r.series||[]).slice().reverse().map(p=>{
+    const u=(DB.users||[]).find(x=>x.id===p.userId);
+    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-top:1px solid var(--c-border)">
+      <div style="width:70px;font-size:12px;color:var(--c-text-2);flex-shrink:0">${esc(fmtS(p.date))}</div>
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--c-text)">${u?esc(fullName(u)):'—'} · <span style="color:var(--c-brand)">${esc(String(p.response))}</span></div>
+      ${p.comment?`<div style="font-size:11px;color:var(--c-text-2);font-style:italic">"${esc(p.comment)}"</div>`:''}</div></div>`;
+  }).join('')||`<div style="padding:14px 0;color:var(--c-text-3);font-size:13px">No entries in this period.</div>`;
+  const cur=(r.current===null||r.current===undefined)?'—':(typeof r.current==='number'?Math.round(r.current*100)/100:'—');
+  const box='display:flex;flex-direction:column;gap:2px';
+  const lab='font-size:10px;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em';
+  const big='font-size:22px;font-weight:800;color:var(--c-text)';
+  const nb='width:26px;height:26px;display:grid;place-items:center;border-radius:7px;border:1px solid var(--c-border);background:var(--c-surface);color:var(--c-text-2);cursor:pointer;font-size:14px;line-height:1';
+  const periodNav=win.fixed
+    ?`<span style="font-size:12px;font-weight:700;color:var(--c-text)">${esc(win.label)}</span>`
+    :`<div style="display:flex;align-items:center;gap:8px">
+        <button onclick="App._okrDetailShift(-1)" title="Previous period" style="${nb}">‹</button>
+        <span style="font-size:12px;font-weight:700;color:var(--c-text);min-width:64px;text-align:center">${esc(win.label)}</span>
+        <button onclick="App._okrDetailShift(1)" title="Next period" ${_okrDetailOffset>=0?`disabled style="${nb};opacity:.4;cursor:not-allowed"`:`style="${nb}"`}>›</button>
+      </div>`;
+  modalShell({title:(o.objective||(q?q.text:'OKR')),size:'max-w-lg',
+    body:`<div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+        <div style="display:flex;gap:20px">
+          <div style="${box}"><span style="${lab}">Current</span><span style="${big}">${cur}</span></div>
+          <div style="${box}"><span style="${lab}">Target</span><span style="${big}">${o.target==null?'—':o.target}</span></div>
+          <div style="${box}"><span style="${lab}">Attainment</span><span style="${big}">${r.attainmentPct==null?'—':r.attainmentPct+'%'}</span></div>
+        </div>
+        ${periodNav}
+      </div>
+      <div style="height:220px;background:var(--c-surface-2);border:1px solid var(--c-border);border-radius:12px;padding:10px;margin-bottom:12px"><canvas id="okrChartCanvas"></canvas></div>
+      <div style="font-size:12px;color:var(--c-text-2);margin-bottom:4px">${esc(_okrScopeLabel(o))} · ${r.count} entr${r.count===1?'y':'ies'}</div>
+      <div style="max-height:240px;overflow-y:auto">${rows}</div>
+    </div>`,
+    footer:btnG('Close','App.closeModal()')});
+  setTimeout(()=>_okrChartRender(o,r),20);
+};
+function _okrChartRender(o,r){
+  if(_okrChart){try{_okrChart.destroy();}catch(e){}_okrChart=null;}
+  const cv=document.getElementById('okrChartCanvas');if(!cv)return;
+  const fail=(msg)=>{const p=cv.parentElement;if(p)p.innerHTML='<div style="height:100%;display:grid;place-items:center;color:var(--c-text-3);font-size:12px;text-align:center;padding:0 16px">'+msg+'</div>';};
+  if(typeof Chart==='undefined')return fail('Chart library still loading…');
+  const q=(DB.questions||[]).find(x=>x.id===o.questionId),qType=q?q.type:'number';
+  const roll=o.rollup||{},agg=o.aggregation||'avg';
+  const GREEN='#0E9F6E',SKY='#0EA5E9',AMBER='#F59E0B',RED='#EF4444',GRID='rgba(120,130,145,.15)',TXT='#94A3B8';
+  const base={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:GRID},ticks:{color:TXT,font:{size:10},maxRotation:0,autoSkip:true,maxTicksLimit:8}},y:{grid:{color:GRID},ticks:{color:TXT,font:{size:10}},beginAtZero:true}}};
+  // Rollup modes that don't produce a submission time-series:
+  if(roll.mode==='manual')return fail('Manually entered value — no trend to chart.');
+  if(roll.mode==='auto_children'){
+    const bd=r.breakdown||[];
+    if(!bd.length)return fail('No linked OKRs to chart.');
+    const labels=bd.map(b=>{const c=(DB.okrs||[]).find(x=>x.id===b.memberId);const cq=c&&(DB.questions||[]).find(qq=>qq.id===c.questionId);return c?(c.objective||(cq?cq.text:'OKR')):b.memberId;});
+    const ds=[{label:'Current',data:bd.map(b=>b.value),backgroundColor:SKY,borderRadius:4}];
+    if(o.target!=null&&isFinite(o.target))ds.push({type:'line',label:'Target',data:labels.map(()=>o.target),borderColor:AMBER,borderDash:[6,4],pointRadius:0});
+    const opt={...base,plugins:{legend:{display:o.target!=null,labels:{color:TXT,font:{size:11},boxWidth:12}}},scales:{x:{...base.scales.x,ticks:{...base.scales.x.ticks,maxTicksLimit:12}},y:base.scales.y}};
+    try{_okrChart=new Chart(cv.getContext('2d'),{type:'bar',data:{labels,datasets:ds},options:opt});}catch(e){fail("Couldn't draw chart.");}
+    return;
+  }
+  // Submission-based (scope / auto_scope):
+  const series=r.series||[];
+  if(!series.length)return fail('No data in this period.');
+  const byDay={};series.forEach(p=>{(byDay[p.date]=byDay[p.date]||[]).push(p);});
+  const days=Object.keys(byDay).sort();
+  let cfg;
+  if(agg==='distribution'){
+    const m=_okrAggregate(series,'distribution')||{},labels=Object.keys(m);
+    cfg={type:'doughnut',data:{labels,datasets:[{data:labels.map(k=>m[k]),backgroundColor:[GREEN,SKY,AMBER,RED,'#8B5CF6','#EC4899','#14B8A6','#F97316']}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,position:'right',labels:{color:TXT,font:{size:11},boxWidth:12}}}}};
+  } else if(agg==='count'){
+    cfg={type:'bar',data:{labels:days.map(d=>fmtS(d)),datasets:[{data:days.map(d=>byDay[d].length),backgroundColor:SKY,borderRadius:4}]},options:base};
+  } else if(agg==='pct_positive'||qType==='passfail'||qType==='yesno'||qType==='tick'){
+    cfg={type:'bar',data:{labels:days.map(d=>fmtS(d)),datasets:[
+      {label:'Positive',data:days.map(d=>byDay[d].filter(p=>p.positive).length),backgroundColor:GREEN,borderRadius:3,stack:'s'},
+      {label:'Other',data:days.map(d=>byDay[d].filter(p=>!p.positive).length),backgroundColor:RED,borderRadius:3,stack:'s'}]},
+      options:{...base,plugins:{legend:{display:true,labels:{color:TXT,font:{size:11},boxWidth:12}}},scales:{x:{...base.scales.x,stacked:true},y:{...base.scales.y,stacked:true,ticks:{...base.scales.y.ticks,precision:0}}}}};
+  } else {
+    const pts=days.map(d=>_okrAggregate(byDay[d],agg));
+    const ds=[{label:'Value',data:pts,borderColor:GREEN,backgroundColor:'rgba(14,159,110,.12)',fill:true,tension:.3,pointRadius:3,pointBackgroundColor:GREEN}];
+    if(o.target!=null&&isFinite(o.target))ds.push({label:'Target',data:days.map(()=>o.target),borderColor:AMBER,borderDash:[6,4],pointRadius:0,fill:false,tension:0});
+    cfg={type:'line',data:{labels:days.map(d=>fmtS(d)),datasets:ds},options:{...base,plugins:{legend:{display:o.target!=null,labels:{color:TXT,font:{size:11},boxWidth:12}}}}};
+  }
+  try{_okrChart=new Chart(cv.getContext('2d'),cfg);}catch(e){fail("Couldn't draw chart.");}
+}
+let _OKRED=null;
+App._editOKR=(id,prefillQid)=>{
+  const existing=id?(DB.okrs||[]).find(x=>x.id===id):null;
+  _OKRED=existing?JSON.parse(JSON.stringify(existing)):{id:uid('okr'),questionId:prefillQid||'',objective:'',target:null,targetMeta:{},targetMode:'per_period',aggregation:'avg',direction:'up',periodType:'quarter',periodStart:null,periodEnd:null,scope:{type:'user',ids:[]},ownerId:S.uid,ownerHistory:[],rollup:{},parentOkrId:null,childOkrIds:[],status:'Active',createdBy:S.uid,createdAt:new Date().toISOString()};
+  App._renderOKRModal();
+};
+App._okrTogMember=(mId)=>{const o=_OKRED;o.rollup=o.rollup||{};const m=o.rollup.members||[];const i=m.indexOf(mId);if(i>-1)m.splice(i,1);else m.push(mId);o.rollup.members=m;o.scope={type:'users',ids:m.slice()};App._renderOKRModal();};
+App._okrTogChild=(cId)=>{const o=_OKRED;const k=o.childOkrIds||[];const i=k.indexOf(cId);if(i>-1)k.splice(i,1);else k.push(cId);o.childOkrIds=k;App._renderOKRModal();};
+App._okrSetWeight=(cId,v)=>{const o=_OKRED;o.rollup=o.rollup||{};o.rollup.weights=o.rollup.weights||{};const n=parseFloat(v);o.rollup.weights[cId]=isFinite(n)?n:1;};
+App._renderOKRModal=()=>{
+  if(!_OKRED)return;
+  const o=_OKRED;o.rollup=o.rollup||{};
+  const mode=o.rollup.mode||'scope';
+  const L='display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px';
+  const qs=DB.questions||[],users=DB.users.filter(u=>u.status==='Active');
+  const isExisting=!!(DB.okrs||[]).find(x=>x.id===o.id);
+  const sc=o.scope||{type:'user',ids:[]};
+  const needsSub=(mode==='scope'||mode==='auto_scope');
+  const togStyle=on=>`padding:5px 11px;border-radius:20px;border:1.5px solid ${on?'#0E9F6E':'var(--c-border)'};background:${on?'#ECFDF5':'var(--c-surface)'};color:${on?'#0B7A55':'var(--c-text-2)'};font-size:12px;font-weight:600;cursor:pointer`;
+  // scope target (mode 'scope')
+  let scopeTarget='';
+  if(sc.type==='user')scopeTarget=`<select class="ui-select rf" onchange="_OKRED.scope.ids=this.value?[this.value]:[];_OKRED.ownerId=this.value||_OKRED.ownerId;App._renderOKRModal()"><option value="">— Select person —</option>${users.map(u=>`<option value="${u.id}" ${(sc.ids||[])[0]===u.id?'selected':''}>${esc(fullName(u))}</option>`).join('')}</select>`;
+  else if(sc.type==='department')scopeTarget=`<select class="ui-select rf" onchange="_OKRED.scope.ids=this.value?[this.value]:[];App._renderOKRModal()"><option value="">— Select department —</option>${(DB.departments||[]).map(d=>`<option value="${d.id}" ${(sc.ids||[])[0]===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
+  else if(sc.type==='location')scopeTarget=`<select class="ui-select rf" onchange="_OKRED.scope.ids=this.value?[this.value]:[];App._renderOKRModal()"><option value="">— Select branch —</option>${(DB.locations||[]).map(l=>`<option value="${l.id}" ${(sc.ids||[])[0]===l.id?'selected':''}>${esc(l.name)}</option>`).join('')}</select>`;
+  else scopeTarget='<div style="font-size:12px;color:var(--c-text-3);padding:9px 0">Measures everyone in the company.</div>';
+  // member picker (auto_scope)
+  const members=o.rollup.members||[];
+  const memberPicker=users.length?users.map(u=>`<button type="button" onclick="App._okrTogMember('${u.id}')" style="${togStyle(members.includes(u.id))}">${esc(fullName(u))}</button>`).join(''):'<div style="font-size:12px;color:var(--c-text-3)">No active users.</div>';
+  // child OKR picker (auto_children)
+  const others=(DB.okrs||[]).filter(x=>x.id!==o.id);
+  const kids=o.childOkrIds||[];
+  const childPicker=others.length?others.map(c=>{const cq=(DB.questions||[]).find(q=>q.id===c.questionId);return `<button type="button" onclick="App._okrTogChild('${c.id}')" style="${togStyle(kids.includes(c.id))};max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.objective||(cq?cq.text:'OKR'))}</button>`;}).join(''):'<div style="font-size:12px;color:var(--c-text-3)">No other OKRs to roll up yet.</div>';
+  const showOwnerField=!(mode==='scope'&&sc.type==='user');
+  modalShell({title:`${isExisting?'Edit':'New'} OKR`,size:'max-w-lg',
+    body:`<div style="display:flex;flex-direction:column;gap:14px">
+      <div><label style="${L}">Objective (goal) *</label><input type="text" value="${esc(o.objective||'')}" oninput="_OKRED.objective=this.value" placeholder="e.g. Improve daily cleanliness score" class="ui-input rf"/></div>
+      <div><label style="${L}">How is the value calculated?</label>
+        <select class="ui-select rf" onchange="_OKRED.rollup.mode=this.value;App._renderOKRModal()">
+          <option value="scope" ${mode==='scope'?'selected':''}>Automatically from submissions</option>
+          <option value="auto_scope" ${mode==='auto_scope'?'selected':''}>From selected team members</option>
+          <option value="auto_children" ${mode==='auto_children'?'selected':''}>Roll up other OKRs</option>
+          <option value="manual" ${mode==='manual'?'selected':''}>Manual entry</option>
+        </select></div>
+      ${needsSub?`<div><label style="${L}">Metric question *</label><select class="ui-select rf" onchange="_OKRED.questionId=this.value"><option value="">— Select a question —</option>${qs.map(qq=>`<option value="${qq.id}" ${o.questionId===qq.id?'selected':''}>${esc(qq.text)} (${esc((Q_TYPES.find(t=>t.id===qq.type)||{label:qq.type}).label)})</option>`).join('')}</select></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label style="${L}">Aggregation</label><select class="ui-select rf" onchange="_OKRED.aggregation=this.value">${_OKR_AGGS.map(a=>`<option value="${a[0]}" ${o.aggregation===a[0]?'selected':''}>${a[1]}</option>`).join('')}</select></div>
+        <div><label style="${L}">Better when</label><select class="ui-select rf" onchange="_OKRED.direction=this.value"><option value="up" ${o.direction==='up'?'selected':''}>Higher is better</option><option value="down" ${o.direction==='down'?'selected':''}>Lower is better</option></select></div>
+      </div>`:`<div><label style="${L}">Better when</label><select class="ui-select rf" onchange="_OKRED.direction=this.value"><option value="up" ${o.direction==='up'?'selected':''}>Higher is better</option><option value="down" ${o.direction==='down'?'selected':''}>Lower is better</option></select></div>`}
+      ${mode==='scope'?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label style="${L}">Measures</label><select class="ui-select rf" onchange="_OKRED.scope={type:this.value,ids:[]};App._renderOKRModal()">${[['user','An individual'],['department','A department'],['location','A branch'],['org','Whole company']].map(s=>`<option value="${s[0]}" ${sc.type===s[0]?'selected':''}>${s[1]}</option>`).join('')}</select></div>
+        <div><label style="${L}">${sc.type==='user'?'Person / owner':'Which'}</label>${scopeTarget}</div>
+      </div>`:''}
+      ${mode==='auto_scope'?`<div><label style="${L}">Team members *</label><div style="display:flex;flex-wrap:wrap;gap:6px">${memberPicker}</div><div style="font-size:11px;color:var(--c-text-3);margin-top:6px">Aggregates these people's answers to the metric question above.</div></div>`:''}
+      ${mode==='auto_children'?`<div><label style="${L}">Roll up these OKRs *</label><div style="display:flex;flex-wrap:wrap;gap:6px">${childPicker}</div></div>
+      <div><label style="${L}">Combine using</label><select class="ui-select rf" onchange="_OKRED.rollup.crossAgg=this.value;App._renderOKRModal()">${[['avg','Average'],['sum','Total'],['min','Minimum'],['max','Maximum'],['weighted','Weighted average'],['pct_meeting_target','% meeting target']].map(c=>`<option value="${c[0]}" ${(o.rollup.crossAgg||'avg')===c[0]?'selected':''}>${c[1]}</option>`).join('')}</select></div>
+      ${(o.rollup.crossAgg==='weighted'&&kids.length)?`<div><label style="${L}">Weights</label>${kids.map(cid=>{const c=(DB.okrs||[]).find(x=>x.id===cid);const cq=c&&(DB.questions||[]).find(q=>q.id===c.questionId);return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px"><span style="flex:1;min-width:0;font-size:12px;color:var(--c-text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c?(c.objective||(cq?cq.text:'OKR')):cid)}</span><input type="number" min="0" step="0.1" value="${(o.rollup.weights&&o.rollup.weights[cid])||1}" oninput="App._okrSetWeight('${cid}',this.value)" style="width:72px" class="ui-input rf"/></div>`;}).join('')}</div>`:''}`:''}
+      ${mode==='manual'?`<div><label style="${L}">Current value *</label><input type="number" value="${o.rollup.manualValue!=null?o.rollup.manualValue:''}" oninput="_OKRED.rollup.manualValue=this.value===''?null:parseFloat(this.value)" placeholder="Enter the value" class="ui-input rf"/><div style="font-size:11px;color:var(--c-text-3);margin-top:6px">You enter this number yourself; it isn't read from submissions.</div></div>`:''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label style="${L}">Target</label><input type="number" value="${o.target!=null?o.target:''}" oninput="_OKRED.target=this.value===''?null:parseFloat(this.value)" placeholder="e.g. 95" class="ui-input rf"/></div>
+        <div><label style="${L}">Period</label><select class="ui-select rf" onchange="_OKRED.periodType=this.value;App._renderOKRModal()">${[['quarter','Quarterly'],['month','Monthly'],['year','Annual'],['custom','Custom dates']].map(p=>`<option value="${p[0]}" ${o.periodType===p[0]?'selected':''}>${p[1]}</option>`).join('')}</select></div>
+      </div>
+      ${o.periodType==='custom'?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div><label style="${L}">Start</label><input type="date" value="${o.periodStart||''}" oninput="_OKRED.periodStart=this.value" class="ui-input rf"/></div><div><label style="${L}">End</label><input type="date" value="${o.periodEnd||''}" oninput="_OKRED.periodEnd=this.value" class="ui-input rf"/></div></div>`:''}
+      ${showOwnerField?`<div><label style="${L}">Owner</label><select class="ui-select rf" onchange="_OKRED.ownerId=this.value"><option value="">— Select owner —</option>${users.map(u=>`<option value="${u.id}" ${o.ownerId===u.id?'selected':''}>${esc(fullName(u))}</option>`).join('')}</select></div>`:''}
+    </div>`,
+    footer:btnG('Cancel','App.closeModal()')+btnP(isExisting?'Save changes':'Create OKR','App._saveOKR()')});
+};
+App._saveOKR=()=>{
+  const o=_OKRED;if(!o)return;
+  o.rollup=o.rollup||{};
+  const mode=o.rollup.mode||'scope';
+  if(!o.objective||!o.objective.trim())return toast('Add an objective','err');
+  if((mode==='scope'||mode==='auto_scope')&&!o.questionId)return toast('Pick a metric question','err');
+  if(mode==='scope'){
+    if(o.scope.type==='user'&&!(o.scope.ids||[])[0])return toast('Pick the person','err');
+    if((o.scope.type==='department'||o.scope.type==='location')&&!(o.scope.ids||[])[0])return toast('Pick the '+(o.scope.type==='department'?'department':'branch'),'err');
+  }
+  if(mode==='auto_scope'&&!(o.rollup.members||[]).length)return toast('Pick at least one team member','err');
+  if(mode==='auto_children'&&!(o.childOkrIds||[]).length)return toast('Pick at least one OKR to roll up','err');
+  if(mode==='manual'&&(o.rollup.manualValue==null||!isFinite(o.rollup.manualValue)))return toast('Enter a value','err');
+  if(!o.ownerId)return toast('Pick an owner','err');
+  const idx=(DB.okrs||[]).findIndex(x=>x.id===o.id);
+  if(idx>-1){
+    const prev=DB.okrs[idx];
+    if(prev.ownerId&&prev.ownerId!==o.ownerId){o.ownerHistory=(prev.ownerHistory||[]).slice();o.ownerHistory.push({userId:prev.ownerId,to:new Date().toISOString().slice(0,10)});}
+    DB.okrs[idx]=o;log(fullName(me()),'Edited OKR',o.objective);
+  } else {DB.okrs=DB.okrs||[];DB.okrs.push(o);log(fullName(me()),'Created OKR',o.objective);}
+  saveDB();closeModal();toast('OKR saved');rr();
+};
+App._deleteOKR=(id)=>{
+  const o=(DB.okrs||[]).find(x=>x.id===id);if(!o)return;
+  if(!confirm('Delete this OKR? Your checklist submission data is not affected.'))return;
+  DB.okrs=(DB.okrs||[]).filter(x=>x.id!==id);
+  DB.okrPeriods=(DB.okrPeriods||[]).filter(p=>p.okrId!==id);
+  saveDB();log(fullName(me()),'Deleted OKR',o.objective);toast('OKR deleted','warn');rr();
+};
 
 /* ===== LOGIN ===== */
 function loginView(){return`<div class="min-h-screen flex" style="background:var(--c-bg)">
@@ -5117,7 +5534,7 @@ App._renderQModal=()=>{
         ${flags.length?`<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px">${flags.map(f=>`<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;background:var(--c-border);color:var(--c-text)">${f}</span>`).join('')}</div>`:''}
       </div>
     </div>`,
-    footer:btnG('Cancel','App.closeModal()')+btnP(isExisting?'Save changes':'Create question','App._saveQuestion()')});
+    footer:btnG('Cancel','App.closeModal()')+(isExisting?btn('Track as OKR',`App.closeModal();App._editOKR(null,'${q.id}')`,{variant:'ghost',icon:'target'}):'')+btnP(isExisting?'Save changes':'Create question','App._saveQuestion()')});
 
 };
 
