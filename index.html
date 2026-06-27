@@ -2075,14 +2075,25 @@ App._renderOKRDetail=()=>{
   const win=_okrShiftWindow(o,_okrDetailOffset);
   const r=computeOKR(o,{period:{start:win.start,end:win.end}});
   const q=(DB.questions||[]).find(x=>x.id===o.questionId);
-  const rows=(r.series||[]).slice().reverse().map(p=>{
+  // Is this period frozen / pending close?
+  const snapRow=(DB.okrPeriods||[]).find(p=>p.okrId===o.id&&p.periodLabel===win.label&&p.snapshot&&(p.snapshot.status==='Pending'||p.snapshot.status==='Closed'));
+  const closed=!!(snapRow&&snapRow.snapshot.status==='Closed');
+  const pending=!!(snapRow&&snapRow.snapshot.status==='Pending');
+  const rollMode=(o.rollup&&o.rollup.mode)||'scope';
+  const subBased=(rollMode==='scope'||rollMode==='auto_scope');
+  const frozenSeries=(closed&&snapRow.snapshot&&Array.isArray(snapRow.snapshot.series))?snapRow.snapshot.series:null;
+  const displaySeries=(frozenSeries&&subBased)?frozenSeries:(r.series||[]);
+  const rows=displaySeries.slice().reverse().map(p=>{
     const u=(DB.users||[]).find(x=>x.id===p.userId);
     return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-top:1px solid var(--c-border)">
       <div style="width:70px;font-size:12px;color:var(--c-text-2);flex-shrink:0">${esc(fmtS(p.date))}</div>
       <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--c-text)">${u?esc(fullName(u)):'—'} · <span style="color:var(--c-brand)">${esc(String(p.response))}</span></div>
       ${p.comment?`<div style="font-size:11px;color:var(--c-text-2);font-style:italic">"${esc(p.comment)}"</div>`:''}</div></div>`;
   }).join('')||`<div style="padding:14px 0;color:var(--c-text-3);font-size:13px">No entries in this period.</div>`;
-  const cur=(r.current===null||r.current===undefined)?'—':(typeof r.current==='number'?Math.round(r.current*100)/100:'—');
+  const num=v=>(v===null||v===undefined)?'—':(typeof v==='number'?Math.round(v*100)/100:'—');
+  const dispCur=closed?num(snapRow.finalValue):num(r.current);
+  const dispAtt=closed?(snapRow.attainmentPct==null?'—':snapRow.attainmentPct+'%'):(r.attainmentPct==null?'—':r.attainmentPct+'%');
+  const dispCount=(frozenSeries&&subBased)?frozenSeries.length:r.count;
   const box='display:flex;flex-direction:column;gap:2px';
   const lab='font-size:10px;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em';
   const big='font-size:22px;font-weight:800;color:var(--c-text)';
@@ -2094,22 +2105,37 @@ App._renderOKRDetail=()=>{
         <span style="font-size:12px;font-weight:700;color:var(--c-text);min-width:64px;text-align:center">${esc(win.label)}</span>
         <button onclick="App._okrDetailShift(1)" title="Next period" ${_okrDetailOffset>=0?`disabled style="${nb};opacity:.4;cursor:not-allowed"`:`style="${nb}"`}>›</button>
       </div>`;
+  const statusBadge=closed
+    ?`<div style="margin-bottom:10px"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;background:#ECFDF5;color:#0B7A55;border:1px solid #BBF7D0">${ic('lock','w-3.5 h-3.5')||'🔒'} Closed &amp; locked${snapRow.closedAt?' · '+esc(fmtS(String(snapRow.closedAt).slice(0,10))):''}</span></div>`
+    :pending
+    ?`<div style="margin-bottom:10px"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px;background:#FFFBEB;color:#B45309;border:1px solid #FDE68A">${ic('clock','w-3.5 h-3.5')||'⏳'} Close pending approval</span></div>`
+    :'';
+  let action='';
+  if(closed)action=(isAdmin()||isSubAdmin())?btn('Reopen for correction',`App._okrReopen('${snapRow.id}')`,{variant:'danger'}):'';
+  else if(pending)action='';
+  else if(_okrCanManage())action=btn('Close period',`App._okrCloseRequest()`,{variant:'brand',icon:'check'});
   modalShell({title:(o.objective||(q?q.text:'OKR')),size:'max-w-lg',
     body:`<div>
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap">
         <div style="display:flex;gap:20px">
-          <div style="${box}"><span style="${lab}">Current</span><span style="${big}">${cur}</span></div>
+          <div style="${box}"><span style="${lab}">${closed?'Final':'Current'}</span><span style="${big}">${dispCur}</span></div>
           <div style="${box}"><span style="${lab}">Target</span><span style="${big}">${o.target==null?'—':o.target}</span></div>
-          <div style="${box}"><span style="${lab}">Attainment</span><span style="${big}">${r.attainmentPct==null?'—':r.attainmentPct+'%'}</span></div>
+          <div style="${box}"><span style="${lab}">Attainment</span><span style="${big}">${dispAtt}</span></div>
         </div>
         ${periodNav}
       </div>
+      ${statusBadge}
       <div style="height:220px;background:var(--c-surface-2);border:1px solid var(--c-border);border-radius:12px;padding:10px;margin-bottom:12px"><canvas id="okrChartCanvas"></canvas></div>
-      <div style="font-size:12px;color:var(--c-text-2);margin-bottom:4px">${esc(_okrScopeLabel(o))} · ${r.count} entr${r.count===1?'y':'ies'}</div>
+      <div style="font-size:12px;color:var(--c-text-2);margin-bottom:4px">${esc(_okrScopeLabel(o))} · ${dispCount} entr${dispCount===1?'y':'ies'}</div>
       <div style="max-height:240px;overflow-y:auto">${rows}</div>
     </div>`,
-    footer:btnG('Close','App.closeModal()')});
-  setTimeout(()=>_okrChartRender(o,r),20);
+    footer:action+btnG('Done','App.closeModal()')});
+  let chartR=r;
+  if(frozenSeries&&subBased){
+    const qt=q?q.type:'number';
+    chartR={series:frozenSeries.map(p=>({date:p.date,userId:p.userId,response:p.response,value:p.value,positive:_okrIsPositive(qt,p.response),comment:p.comment||''})),breakdown:[],current:snapRow.finalValue,attainmentPct:snapRow.attainmentPct,count:frozenSeries.length};
+  }
+  setTimeout(()=>_okrChartRender(o,chartR),20);
 };
 function _okrChartRender(o,r){
   if(_okrChart){try{_okrChart.destroy();}catch(e){}_okrChart=null;}
@@ -2250,6 +2276,35 @@ App._deleteOKR=(id)=>{
   DB.okrs=(DB.okrs||[]).filter(x=>x.id!==id);
   DB.okrPeriods=(DB.okrPeriods||[]).filter(p=>p.okrId!==id);
   saveDB();log(fullName(me()),'Deleted OKR',o.objective);toast('OKR deleted','warn');rr();
+};
+
+App._okrCloseRequest=()=>{
+  const o=(DB.okrs||[]).find(x=>x.id===_okrDetailId);if(!o)return;
+  const win=_okrShiftWindow(o,_okrDetailOffset);
+  const ex=(DB.okrPeriods||[]).find(p=>p.okrId===o.id&&p.periodLabel===win.label&&p.snapshot&&(p.snapshot.status==='Pending'||p.snapshot.status==='Closed'));
+  if(ex)return toast(ex.snapshot.status==='Closed'?'This period is already closed':'A close is already pending approval','warn');
+  const r=computeOKR(o,{period:{start:win.start,end:win.end}});
+  const snap={status:'Pending',requestedBy:S.uid,requestedAt:new Date().toISOString(),scopeLabel:_okrScopeLabel(o),count:r.count,series:(r.series||[]).map(p=>({date:p.date,userId:p.userId,response:p.response,value:p.value,comment:p.comment||''}))};
+  DB.okrPeriods=DB.okrPeriods||[];
+  DB.okrPeriods.push({id:uid('okp'),okrId:o.id,periodLabel:win.label,periodStart:win.start,periodEnd:win.end,finalValue:(typeof r.current==='number'&&isFinite(r.current))?r.current:null,attainmentPct:r.attainmentPct,snapshot:snap,closedBy:S.uid,closedAt:null,approvalId:null});
+  saveDB();log(fullName(me()),'Requested OKR period close',(o.objective||'')+' · '+win.label);
+  toast('Close requested — pending approval');App._renderOKRDetail();
+};
+App._okrCloseDecide=(pid,action)=>{
+  const p=(DB.okrPeriods||[]).find(x=>x.id===pid);if(!p)return;
+  const snap=p.snapshot||{};
+  if(action==='approve'){snap.status='Closed';snap.approvedBy=S.uid;p.snapshot=snap;p.closedAt=new Date().toISOString();log(fullName(me()),'Approved OKR period close',(p.periodLabel||'')+' · '+p.okrId);toast('Period closed & locked');}
+  else{snap.status='Rejected';snap.approvedBy=S.uid;p.snapshot=snap;log(fullName(me()),'Rejected OKR period close',(p.periodLabel||'')+' · '+p.okrId);toast('Close rejected','warn');}
+  saveDB();rr();
+};
+App._okrReopen=(pid)=>{
+  if(!(isAdmin()||isSubAdmin()))return toast('Only an admin can reopen a closed period','err');
+  const p=(DB.okrPeriods||[]).find(x=>x.id===pid);if(!p)return;
+  if(!confirm('Reopen this closed period for correction? The locked value is removed and the period recomputes live from current submissions.'))return;
+  DB.okrPeriods=(DB.okrPeriods||[]).filter(x=>x.id!==pid);
+  saveDB();log(fullName(me()),'Reopened OKR period (correction)',(p.periodLabel||'')+' · '+p.okrId);
+  toast('Period reopened');
+  if(_okrDetailId)App._renderOKRDetail();else rr();
 };
 
 /* ===== LOGIN ===== */
@@ -4788,8 +4843,9 @@ const _APPR_META={
   submission: {icon:'check',    label:'Submissions', chip:'Submissions'},
   edit:       {icon:'edit',     label:'Edits',       chip:'Edits'},
   document:   {icon:'doc',      label:'Documents',   chip:'Documents'},
+  okrclose:   {icon:'chart',    label:'OKR closes',  chip:'OKR closes'},
 };
-const _APPR_ORDER=['leave','submission','edit','document'];
+const _APPR_ORDER=['leave','submission','edit','document','okrclose'];
 function unifiedApprovalsPage(){
   const all=_approvalInbox();
   // Status sub-tabs: Pending / Approved / Rejected. Default Pending (the actionable view).
@@ -4839,11 +4895,15 @@ function _inboxRow(x){
     ? "App._inboxDecide('"+esc(x.id)+"','approve')"
     : x._src.coll==='documents'
     ? "App._decideDoc('"+esc(x._src.id)+"','approve')"
+    : x._src.coll==='okrPeriods'
+    ? "App._okrCloseDecide('"+esc(x._src.id)+"','approve')"
     : "App._decideApprove('"+esc(x._src.id)+"')";
   const rejectCall=x._src.coll==='leaveRequests'
     ? "App._inboxDecide('"+esc(x.id)+"','reject')"
     : x._src.coll==='documents'
     ? "App._decideDoc('"+esc(x._src.id)+"','reject')"
+    : x._src.coll==='okrPeriods'
+    ? "App._okrCloseDecide('"+esc(x._src.id)+"','reject')"
     : "App._decideReject('"+esc(x._src.id)+"')";
   return '<div class="ui-card" style="padding:16px">'
     +'<div onclick="App._inboxOpen(\''+esc(x.id)+'\')" style="display:flex;align-items:flex-start;gap:12px;cursor:pointer">'
@@ -4869,6 +4929,7 @@ App._setApprTab=(t)=>{S.filters.atab=t;S.filters.inboxType='all';rr();};
 // Open type-specific detail reusing existing renderers.
 App._inboxOpen=(iid)=>{
   const x=_approvalInbox().find(i=>i.id===iid);if(!x)return;
+  if(x.type==='okrclose'){App.closeModal();App._okrDetail(x.payload.okrId);return;}
   if(x.type==='leave'){
     const r=x.payload;const emp=uById(r.userId);const lt=ltById(r.leaveTypeId);
     const b=_balanceReadonly(r.userId,r.leaveTypeId,_leaveYearOf(emp,r.start));
@@ -8506,6 +8567,26 @@ function _approvalInbox(){
       decidedBy:d.decidedBy||null, decidedAt:d.decidedAt||null,
       location:up?.hrm?.locationId||'', dept:up?.department||'',
       _src:{coll:'documents',id:d.id}
+    });
+  });
+  // (d) OKR PERIOD CLOSE — a frozen snapshot awaiting manager sign-off. Requester = whoever asked to
+  //     close; approver = an admin/sub-admin or anyone whose team includes the requester. Pending rows
+  //     are actionable by the approver; decided rows surface to the approver pool plus the requester.
+  (DB.okrPeriods||[]).forEach(p=>{
+    const snap=p.snapshot||{};if(!snap.status)return;
+    const st=snap.status==='Closed'?'Approved':snap.status==='Rejected'?'Rejected':'Pending';
+    const reqId=p.closedBy||snap.requestedBy;
+    const isApprover=isAdmin()||isSubAdmin()||(!!reqId&&reqId!==S.uid&&subTree(S.uid).some(u=>u.id===reqId));
+    if(st==='Pending'){if(!isApprover)return;}
+    else{if(!isApprover&&reqId!==S.uid)return;}
+    const okr=(DB.okrs||[]).find(o=>o.id===p.okrId);const u=uById(reqId);
+    items.push({
+      id:'okrp-'+p.id, type:'okrclose', requestedBy:reqId, assignedTo:null,
+      subject:(okr?(okr.objective||'OKR'):'OKR')+' · '+(p.periodLabel||''),
+      payload:{...p,createdAt:snap.requestedAt||p.closedAt}, status:st,
+      decidedBy:snap.approvedBy||null, decidedAt:p.closedAt||null,
+      location:'', dept:u?.department||'',
+      _src:{coll:'okrPeriods',id:p.id}
     });
   });
   // (SOP and Expense approval mappers removed — those features were retired.)
