@@ -6844,7 +6844,7 @@ App._aStatDrill=(type)=>{
     body:'<div style="margin:-20px">'+(rows||'<div style="padding:32px;text-align:center;color:var(--c-text-3);font-size:13px">'+emptyMsg+'</div>')+'</div>'});
 };
 
-let _AData=null,_HData=null,_aCharts=[];
+let _AData=null,_HData=null,_HRMData=null,_aCharts=[];
 function analyticsPage(){
   const today=todayISO();
   // Collect all relevant submissions
@@ -6951,6 +6951,9 @@ function analyticsPage(){
   };
   const _cc='background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm);padding:18px';
   const _ct='font-size:14px;font-weight:700;color:var(--c-text);margin-bottom:12px';
+  const _view=S.dashView==='details'?'details':'visuals';
+  const _stb=(v,lbl,icn)=>`<button onclick="S.dashView='${v}';rr()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;border:1px solid ${_view===v?'var(--c-text)':'var(--c-border)'};background:${_view===v?'var(--c-text)':'var(--c-surface)'};color:${_view===v?'#fff':'var(--c-text-2)'};font-size:13px;font-weight:700;cursor:pointer">${ic(icn,'w-4 h-4')}${lbl}</button>`;
+  const _subTab=`<div style="display:flex;gap:8px;margin-bottom:14px">${_stb('visuals','Visuals','chart')}${_stb('details','Details','list')}</div>`;
 
   return`<div class="fade" onclick="(function(e){if(S.afOpen&&!e.target.closest('[data-af]')){S.afOpen=null;rr();}})(event)">
   ${hdr('Dashboard',new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}))}
@@ -6974,6 +6977,8 @@ function analyticsPage(){
     </div>
   </div>
 
+  ${_subTab}
+  ${_view==='details'?`
   <!-- Stats row 1: submissions (all clickable) -->
   <div class="astat-grid" style="margin-bottom:8px">
     ${App._aStatCard('Submitted',subs.length,'sky','submitted',subs)}
@@ -6994,8 +6999,8 @@ function analyticsPage(){
     ${App._aStatCard('Non-compliant',nonCompliantN,'#BE123C','noncompliant',null)}
     <div onclick="App.go('approvals')" style="background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm);padding:18px;cursor:pointer"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--c-text-3);margin-bottom:10px">Pending approvals</div><div class="fd" style="font-size:30px;font-weight:800;line-height:1;color:#F59E0B">${_pendA}</div><div style="font-size:12px;color:var(--c-text-3);margin-top:8px;display:flex;align-items:center;gap:3px">Open approvals ${ic('chevR','w-3 h-3')}</div></div>
   </div>
-
-
+  `:''}
+  ${_view==='visuals'?`
   <!-- Live charts (update with every filter) -->
   <div class="achart-grid" style="margin-bottom:14px">
     <div style="${_cc}"><div class="fd" style="${_ct}">Status breakdown</div><div style="position:relative;height:230px"><canvas id="aChartStatus" data-chart="status"></canvas></div></div>
@@ -7009,7 +7014,8 @@ function analyticsPage(){
       ${topU.slice(0,7).map(({u,n})=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;cursor:pointer" onclick="App._userDrill('${u.id}')">${avatar(u,'w-7 h-7','text-[10px]')}<div style="flex:1;font-size:13px;font-weight:500;color:var(--c-text);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(fullName(u))}</div><span class="fd" style="font-size:15px;font-weight:800;color:var(--c-text)">${n}</span><span style="font-size:11px;color:var(--c-text-3)">&rsaquo;</span></div>`).join('')||'<p style="font-size:13px;color:var(--c-text-3)">No data yet</p>'}
     </div>
   </div>
-
+  `:''}
+  ${_view==='details'?`
   <!-- Folded from the old admin/manager dashboard: per-user performance (respects the same scope + filters) -->
   <div style="${_cc};padding:0;overflow:hidden;margin-bottom:14px">
     <div style="padding:14px 18px;border-bottom:1px solid var(--c-border)"><span class="fd" style="font-size:14px;font-weight:700;color:var(--c-text)">${isAdmin()?'All users performance':'Team performance'} (${_perfRows.length})</span></div>
@@ -7039,7 +7045,8 @@ function analyticsPage(){
         <td style="padding:9px 16px">${_qTot?(_esc>0?`<span style="display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:var(--c-danger-soft);color:var(--c-danger-ink);white-space:nowrap">${ic('alert','w-3 h-3')}${_esc}</span>`:`<span style="display:inline-flex;align-items:center;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:var(--c-success-soft);color:var(--c-success-ink);white-space:nowrap">${ic('check','w-3 h-3')}</span>`):'<span style="color:var(--c-text-3)">—</span>'}</td>
       </tr>`;}).join('')}</tbody>
     </table>${recent.length?'':empty('chart','No submissions match','Adjust filters or date range')}</div>
-  </div></div>`;
+  </div>
+  `:''}</div>`;
 }
 
 
@@ -7096,13 +7103,24 @@ App._togF=(key,val)=>{
 function _aChartTheme(){return {tick:'#8A93A3',grid:'rgba(138,147,163,0.18)'};}
 function _destroyACharts(){_aCharts.forEach(c=>{try{c.destroy();}catch(e){}});_aCharts=[];}
 function _paintCharts(){try{
-  const need=document.getElementById('aChartStatus')||document.getElementById('hChartOnTime');
+  const need=document.getElementById('aChartStatus')||document.getElementById('hChartOnTime')||document.getElementById('hrmChartWorked');
   if(need&&typeof Chart==='undefined'){if(!_paintCharts._r){_paintCharts._r=1;setTimeout(_paintCharts,250);}return;}
   _paintCharts._r=0;
   if(document.getElementById('aChartStatus'))_drawAnalyticsCharts();
   else if(document.getElementById('hChartOnTime'))_drawHomeCharts();
+  else if(document.getElementById('hrmChartWorked'))_drawHrmCharts();
   else _destroyACharts();
 }catch(e){}}
+function _drawHrmCharts(){
+  if(typeof Chart==='undefined'||!_HRMData)return;
+  _destroyACharts();
+  const T=_aChartTheme(),D=_HRMData;
+  const mk=(id,cfg)=>{const cv=document.getElementById(id);if(!cv)return;try{_aCharts.push(new Chart(cv.getContext('2d'),cfg));}catch(e){}};
+  const legB={legend:{position:'bottom',labels:{color:T.tick,font:{size:11},boxWidth:12,padding:10}}};
+  mk('hrmChartWorked',{type:'bar',data:{labels:D.labels,datasets:[{label:'Worked hrs',data:D.worked,backgroundColor:'#0E9F6E',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10}},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+  mk('hrmChartLate',{type:'bar',data:{labels:D.labels,datasets:[{label:'Lates',data:D.lates,backgroundColor:'#F59E0B',borderRadius:4},{label:'Absences',data:D.absences,backgroundColor:'#EF4444',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+  mk('hrmChartLeave',{type:'bar',data:{labels:D.labels,datasets:[{label:'Taken',data:D.taken,backgroundColor:'#0EA5E9',borderRadius:4},{label:'Remaining',data:D.remaining,backgroundColor:'#CBD5E1',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,scales:{x:{stacked:true,beginAtZero:true,ticks:{color:T.tick,font:{size:10}},grid:{color:T.grid}},y:{stacked:true,ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+}
 function _drawAnalyticsCharts(){
   if(typeof Chart==='undefined'||!_AData)return;
   _destroyACharts();
@@ -9684,7 +9702,19 @@ function hrmAnalyticsPage(){
   const tot=rows.reduce((a,r)=>({w:a.w+r.worked,l:a.l+r.lates,lv:a.lv+r.leavesTaken,ab:a.ab+r.absences}),{w:0,l:0,lv:0,ab:0});
   const stats=`<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">${statCard('Total worked hrs',_r2(tot.w),'brand')}${statCard('Late check-ins',tot.l,'amber')}${statCard('Leave days taken',_r2(tot.lv),'sky')}${statCard('Absences',tot.ab,'rose')}</div>`;
   const table=`<div style="background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm);overflow:hidden"><div style="overflow-x:auto"><table class="w-full text-sm"><thead><tr style="border-bottom:1px solid var(--c-border);text-align:left"><th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Employee</th><th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Dept</th><th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Worked hrs</th><th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Lates</th><th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Leaves taken</th><th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Remaining</th><th class="px-4 py-2.5" style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Absences</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr style="border-bottom:1px solid var(--c-border)"><td class="px-4 py-2.5"><div class="flex items-center gap-2">${avatar(r.u,'w-7 h-7','text-[10px]')}<span style="font-weight:500;color:var(--c-text)">${esc(fullName(r.u))}</span></div></td><td class="px-4 py-2.5" style="font-size:12px;color:var(--c-text-2)">${esc(r.u.department||'')}</td><td class="px-4 py-2.5" style="font-weight:600;color:var(--c-text)">${r.worked}h</td><td class="px-4 py-2.5" style="${r.lates?'color:var(--c-warn);font-weight:600':'color:var(--c-text)'}">${r.lates}</td><td class="px-4 py-2.5" style="color:var(--c-text)">${r.leavesTaken}</td><td class="px-4 py-2.5" style="color:var(--c-success-ink)">${r.remaining}</td><td class="px-4 py-2.5" style="${r.absences?'color:var(--c-rose,#E11D48);font-weight:600':'color:var(--c-text)'}">${r.absences}</td></tr>`).join(''):`<tr><td colspan="7">${empty('chart','No data','Adjust filters or date range.')}</td></tr>`}</tbody></table></div></div>`;
-  return `<div class="fade">${hdr('HRM Analytics','Worked hours, lateness, leaves & absences'+(isAdmin()?'':isHR()?' (all staff except Super Admins)':isMgr()?' (your team)':' (you)'))}${filterBar}${stats}${table}</div>`;
+  const _cc='background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm);padding:18px';
+  const _ct='font-size:14px;font-weight:700;color:var(--c-text);margin-bottom:12px';
+  const _hv=S.hrmView==='details'?'details':'visuals';
+  const _hrmTop=rows.slice().sort((a,b)=>b.worked-a.worked).slice(0,12);
+  _HRMData={labels:_hrmTop.map(r=>fullName(r.u)),worked:_hrmTop.map(r=>r.worked),lates:_hrmTop.map(r=>r.lates),absences:_hrmTop.map(r=>r.absences),taken:_hrmTop.map(r=>r.leavesTaken),remaining:_hrmTop.map(r=>r.remaining)};
+  const _stb=(v,lbl,icn)=>`<button onclick="S.hrmView='${v}';rr()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;border:1px solid ${_hv===v?'var(--c-text)':'var(--c-border)'};background:${_hv===v?'var(--c-text)':'var(--c-surface)'};color:${_hv===v?'#fff':'var(--c-text-2)'};font-size:13px;font-weight:700;cursor:pointer">${ic(icn,'w-4 h-4')}${lbl}</button>`;
+  const _subTab=`<div style="display:flex;gap:8px;margin-bottom:16px">${_stb('visuals','Visuals','chart')}${_stb('details','Details','list')}</div>`;
+  const visualsHTML=rows.length?`<div class="achart-grid" style="margin-bottom:14px">
+      <div style="${_cc}"><div class="fd" style="${_ct}">Worked hours by employee</div><div style="position:relative;height:360px"><canvas id="hrmChartWorked" data-chart="worked-hours"></canvas></div></div>
+      <div style="${_cc}"><div class="fd" style="${_ct}">Lateness &amp; absences</div><div style="position:relative;height:360px"><canvas id="hrmChartLate" data-chart="lateness-absences"></canvas></div></div>
+    </div>
+    <div style="${_cc};margin-bottom:14px"><div class="fd" style="${_ct}">Leave: taken vs remaining</div><div style="position:relative;height:360px"><canvas id="hrmChartLeave" data-chart="leave-balance"></canvas></div></div>`:empty('chart','No data','Adjust filters or date range.');
+  return `<div class="fade">${hdr('HRM Analytics','Worked hours, lateness, leaves & absences'+(isAdmin()?'':isHR()?' (all staff except Super Admins)':isMgr()?' (your team)':' (you)'))}${filterBar}${_subTab}${_hv==='visuals'?visualsHTML:(stats+table)}</div>`;
 }
 function _deriveAbsences(u,d1,d2){
   // count past working days in range with no attendance record and no approved leave
