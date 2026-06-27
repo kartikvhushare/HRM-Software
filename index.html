@@ -1022,10 +1022,23 @@ function _okrScopeUserIds(scope){
   if(t==='department'){
     const names=new Set();
     ids.forEach(id=>{const d=(DB.departments||[]).find(x=>x.id===id);names.add(d?d.name:id);});
-    return new Set((DB.users||[]).filter(u=>names.has(u.department)).map(u=>u.id));
+    const sub=scope.subDept||''; // optional sub-department filter (matches u.subDepartment)
+    return new Set((DB.users||[]).filter(u=>names.has(u.department)&&(!sub||u.subDepartment===sub)).map(u=>u.id));
   }
   if(t==='location')return null;
   return new Set(ids);
+}
+// Department scope picker: a TOP-LEVEL department dropdown + (when the chosen department has
+// sub-departments) an optional sub-department dropdown. `vp` is the JS path to the OKR working
+// object (e.g. '_OKRED' or '_QED._okr'); `rr` is the re-render call to run after the department changes.
+function _okrDeptScope(o,vp,rr){
+  const sc=o.scope||(o.scope={type:'department',ids:[]});
+  const deptId=(sc.ids||[])[0]||'';
+  const dept=_deptById(deptId);
+  const subs=dept?subDepts(dept.id):[];
+  const deptSel=`<select class="ui-select rf" onchange="${vp}.scope.ids=this.value?[this.value]:[];${vp}.scope.subDept='';${rr}"><option value="">— Select department —</option>${topDepts().map(d=>`<option value="${d.id}" ${deptId===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
+  const subSel=(deptId&&subs.length)?`<div style="margin-top:8px"><label style="display:block;font-size:10px;font-weight:600;color:var(--c-text-3);margin-bottom:4px">Sub-department (optional)</label><select class="ui-select rf" onchange="${vp}.scope.subDept=this.value"><option value="">All sub-departments</option>${subs.map(s=>`<option value="${esc(s.name)}" ${(sc.subDept||'')===s.name?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>`:'';
+  return deptSel+subSel;
 }
 function _okrSeries(okr,win){
   if(!okr.questionId)return[];
@@ -2017,7 +2030,7 @@ function _okrScopeLabel(o){
   const sc=o.scope||{},ids=sc.ids||[];
   if(sc.type==='org'||!sc.type)return 'Whole company';
   if(sc.type==='user'||sc.type==='users'){const u=(DB.users||[]).find(x=>x.id===ids[0]);return ids.length<=1?('Individual · '+(u?fullName(u):'—')):('Individuals · '+ids.length);}
-  if(sc.type==='department'){const d=(DB.departments||[]).find(x=>x.id===ids[0]);return 'Department · '+(d?d.name:(ids[0]||'—'));}
+  if(sc.type==='department'){const d=(DB.departments||[]).find(x=>x.id===ids[0]);return 'Department · '+(d?d.name:(ids[0]||'—'))+(sc.subDept?(' › '+sc.subDept):'');}
   if(sc.type==='location'){const l=(DB.locations||[]).find(x=>x.id===ids[0]);return 'Branch · '+(l?l.name:(ids[0]||'—'));}
   return sc.type;
 }
@@ -2032,8 +2045,8 @@ function _okrPeriodLabel(o){
 }
 function okrPage(){
   const list=_okrVisible(),canMng=_okrCanManage();
-  const head=hdr('OKRs & KPIs','Goals measured from your checklist answers',canMng?btnP('New OKR','App._editOKR(null)','plus'):'');
-  if(!list.length)return `<div class="fade">${head}${empty('chart','No OKRs yet',canMng?'Create an OKR to track a metric from your checklist questions.':'No OKRs have been assigned to you yet.')}</div>`;
+  const head=hdr('OKRs & KPIs','Goals measured from your checklist answers');
+  if(!list.length)return `<div class="fade">${head}${empty('chart','No OKRs yet',canMng?'Open a question in the Questions page and turn on “Track as OKR” to start measuring a metric.':'No OKRs have been assigned to you yet.')}</div>`;
   const icBtn='width:28px;height:28px;display:grid;place-items:center;border-radius:8px;color:var(--c-text-3);background:transparent;border:none;cursor:pointer';
   const pill='font-size:11px;padding:2px 8px;border-radius:20px;background:var(--c-surface-2);color:var(--c-text-2)';
   const cards=list.map(o=>{
@@ -2213,7 +2226,7 @@ App._renderOKRModal=()=>{
   // scope target (mode 'scope')
   let scopeTarget='';
   if(sc.type==='user')scopeTarget=`<select class="ui-select rf" onchange="_OKRED.scope.ids=this.value?[this.value]:[];_OKRED.ownerId=this.value||_OKRED.ownerId;App._renderOKRModal()"><option value="">— Select person —</option>${users.map(u=>`<option value="${u.id}" ${(sc.ids||[])[0]===u.id?'selected':''}>${esc(fullName(u))}</option>`).join('')}</select>`;
-  else if(sc.type==='department')scopeTarget=`<select class="ui-select rf" onchange="_OKRED.scope.ids=this.value?[this.value]:[];App._renderOKRModal()"><option value="">— Select department —</option>${(DB.departments||[]).map(d=>`<option value="${d.id}" ${(sc.ids||[])[0]===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
+  else if(sc.type==='department')scopeTarget=_okrDeptScope(o,'_OKRED','App._renderOKRModal()');
   else if(sc.type==='location')scopeTarget=`<select class="ui-select rf" onchange="_OKRED.scope.ids=this.value?[this.value]:[];App._renderOKRModal()"><option value="">— Select branch —</option>${(DB.locations||[]).map(l=>`<option value="${l.id}" ${(sc.ids||[])[0]===l.id?'selected':''}>${esc(l.name)}</option>`).join('')}</select>`;
   else scopeTarget='<div style="font-size:12px;color:var(--c-text-3);padding:9px 0">Measures everyone in the company.</div>';
   // member picker (auto_scope)
@@ -5522,7 +5535,7 @@ function _qOkrFieldsHTML(){
   const users=DB.users.filter(u=>u.status==='Active');
   let scopeTarget='';
   if(sc.type==='user')scopeTarget=`<select class="ui-select rf" onchange="_QED._okr.scope.ids=this.value?[this.value]:[];_QED._okr.ownerId=this.value||_QED._okr.ownerId;App._renderQModal()"><option value="">— Select person —</option>${users.map(u=>`<option value="${u.id}" ${(sc.ids||[])[0]===u.id?'selected':''}>${esc(fullName(u))}</option>`).join('')}</select>`;
-  else if(sc.type==='department')scopeTarget=`<select class="ui-select rf" onchange="_QED._okr.scope.ids=this.value?[this.value]:[];App._renderQModal()"><option value="">— Select department —</option>${(DB.departments||[]).map(d=>`<option value="${d.id}" ${(sc.ids||[])[0]===d.id?'selected':''}>${esc(d.name)}</option>`).join('')}</select>`;
+  else if(sc.type==='department')scopeTarget=_okrDeptScope(o,'_QED._okr','App._renderQModal()');
   else if(sc.type==='location')scopeTarget=`<select class="ui-select rf" onchange="_QED._okr.scope.ids=this.value?[this.value]:[];App._renderQModal()"><option value="">— Select branch —</option>${(DB.locations||[]).map(l=>`<option value="${l.id}" ${(sc.ids||[])[0]===l.id?'selected':''}>${esc(l.name)}</option>`).join('')}</select>`;
   else scopeTarget='<div style="font-size:12px;color:var(--c-text-3);padding:9px 0">Measures everyone in the company.</div>';
   const showOwner=!(sc.type==='user');
