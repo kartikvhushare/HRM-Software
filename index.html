@@ -72,7 +72,14 @@ body{font-family:"Hanken Grotesk",sans-serif;font-size:14px;line-height:1.5;back
 .ui-btn-danger:hover{background:var(--c-danger-hover)}
 .ui-btn[disabled],.ui-btn[aria-disabled="true"]{opacity:.5;cursor:not-allowed;pointer-events:none}
 /* Inputs */
-.ui-input,.ui-select{width:100%;box-sizing:border-box;background:var(--c-surface);border:1.5px solid var(--c-border-2);border-radius:var(--r-md);padding:11px 14px;font-size:14px;color:var(--c-text);transition:border-color .15s,box-shadow .15s,background .15s;font-family:inherit}
+.ui-input,.ui-select{width:100%;box-sizing:border-box;background:var(--c-surface);border:1.5px solid var(--c-border-2);border-radius:var(--r-md);padding:11px 14px;font-size:14px;color:var(--c-text);transition:border-color .15s,box-shadow .15s,background .15s;font-family:inherit;-webkit-appearance:none;appearance:none}
+/* ── Safari normalisation: native <select>/<date>/<time> controls render with heavy off-design chrome
+   in Safari (double-chevron, inset look, odd heights). Reset appearance everywhere and supply our own
+   chevron so selects match the rest of the UI in every browser. ── */
+select{-webkit-appearance:none !important;-moz-appearance:none !important;appearance:none !important;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>") !important;background-repeat:no-repeat !important;background-position:right 11px center !important;padding-right:34px !important}
+input[type=date],input[type=time]{-webkit-appearance:none;appearance:none}
+input[type=date]::-webkit-date-and-time-value,input[type=time]::-webkit-date-and-time-value{text-align:left}
+input[type=date]::-webkit-calendar-picker-indicator,input[type=time]::-webkit-calendar-picker-indicator{opacity:.5}
 .ui-input::placeholder{color:var(--c-text-3)}
 .ui-input:hover,.ui-select:hover{border-color:var(--c-text-3)}
 .ui-input:focus,.ui-select:focus{outline:none;border-color:var(--c-brand);box-shadow:var(--ring)}
@@ -4520,7 +4527,7 @@ function teamViewPage(){
     </div>
 
     <!-- Sticky calendar strip -->
-    <div style="position:sticky;top:52px;z-index:10;background:rgba(247,246,242,.95);backdrop-filter:blur(12px);margin:0 -16px;padding:0 16px 10px">
+    <div style="position:sticky;top:52px;z-index:10;background:rgba(247,246,242,.95);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);margin:0 -16px;padding:0 16px 10px">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0">
         <span style="font-size:13px;font-weight:600;color:#B8B5AC">${selDate===today?'Today · ':''}${fmtD(selDate)}</span>
         <div style="display:flex;gap:4px;align-items:center">
@@ -4791,7 +4798,7 @@ function allClsPage(){
       </select>
     </div>
     <!-- Sticky calendar strip (same as Team view) -->
-    <div style="position:sticky;top:52px;z-index:10;background:rgba(247,246,242,.95);backdrop-filter:blur(12px);margin:0 -16px;padding:0 16px 10px">
+    <div style="position:sticky;top:52px;z-index:10;background:rgba(247,246,242,.95);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);margin:0 -16px;padding:0 16px 10px">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0">
         <span style="font-size:13px;font-weight:600;color:#B8B5AC">${d===today?'Today · ':''}${fmtD(d)}</span>
         <div style="display:flex;gap:4px;align-items:center">
