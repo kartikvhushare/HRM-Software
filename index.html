@@ -6844,7 +6844,7 @@ App._aStatDrill=(type)=>{
     body:'<div style="margin:-20px">'+(rows||'<div style="padding:32px;text-align:center;color:var(--c-text-3);font-size:13px">'+emptyMsg+'</div>')+'</div>'});
 };
 
-let _AData=null,_HData=null,_HRMData=null,_aCharts=[];
+let _AData=null,_HData=null,_HRMData=null,_AFiltered=null,_aCharts=[];
 function analyticsPage(){
   const today=todayISO();
   // Collect all relevant submissions
@@ -6884,7 +6884,7 @@ function analyticsPage(){
   const dr2=f.dr2||today;
   let d=new Date(dr1+'T00:00:00');const dEnd=new Date(dr2+'T00:00:00');
   while(d<=dEnd&&dateRange.length<60){dateRange.push(d.toISOString().slice(0,10));d.setDate(d.getDate()+1);}
-  let totalAssigned=0,totalMissed=0;
+  let totalAssigned=0,totalMissed=0;const _missedList=[];
   relevantUsers.forEach(u=>{
     if(fArr('users').length&&!fArr('users').includes(u.id))return;
     dateRange.forEach(dt=>{
@@ -6898,6 +6898,7 @@ function analyticsPage(){
           : !!DB.submissions.find(s=>s.checklistId===c.id&&s.userId===u.id&&s.date===dt);
         if(!_done&&dt<today){
           totalMissed++;
+          _missedList.push({userId:u.id,checklistId:c.id,date:dt});
         }
       });
     });
@@ -6939,16 +6940,25 @@ function analyticsPage(){
     return{u,asgn,total:ss.length,late:ss.filter(s=>s.status==='Late').length,pend:ss.filter(s=>['Pending','Pending Approval'].includes(s.status)).length,tk:aTickets.filter(t=>t.assignedTo===u.id&&(t.status==='Open'||t.status==='In Progress')).length,pct:ss.length?Math.round(ot/ss.length*100):0};
   }).filter(r=>r.total||r.asgn).sort((a,b)=>fullName(a.u).localeCompare(fullName(b.u)));
   const _trendLabels=dateRange.map(d=>d.slice(5));
+  const _dateMap={};dateRange.forEach(d=>{_dateMap[d.slice(5)]=d;});
   const _depMap={};subs.forEach(s=>{const c=clById(s.checklistId);if(!c)return;const dn=c.department||'—';(_depMap[dn]=_depMap[dn]||{t:0,ot:0});_depMap[dn].t++;if(s.status==='On Time')_depMap[dn].ot++;});
   const _depArr=Object.keys(_depMap).map(k=>({name:k,t:_depMap[k].t,ot:_depMap[k].ot})).sort((a,b)=>b.t-a.t).slice(0,8);
+  // compliant / non-compliant submission LISTS (for click-to-drill)
+  const _comp=[],_noncomp=[];subs.forEach(s=>{const c=clById(s.checklistId);if(!c||!(c.questionIds||[]).length)return;(_subEscalationCount(c,s)>0?_noncomp:_comp).push(s);});
+  // per-employee dataset — respects the employee filter (else top 15 by activity)
+  let _empUsers=relevantUsers.filter(u=>u.status==='Active');
+  if(fArr('users').length)_empUsers=_empUsers.filter(u=>fArr('users').includes(u.id));
+  const _empRows=_empUsers.map(u=>{const ss=subs.filter(s=>s.userId===u.id);return{id:u.id,name:fullName(u),ot:ss.filter(s=>s.status==='On Time').length,late:ss.filter(s=>s.status==='Late').length,pend:ss.filter(s=>['Pending','Pending Approval'].includes(s.status)).length,total:ss.length};}).filter(r=>r.total).sort((a,b)=>b.total-a.total).slice(0,15);
   _AData={
     status:{labels:['On Time','Late','Pending Approval','Rejected','Missed'],data:[byS['On Time']||0,byS['Late']||0,byS['Pending Approval']||0,byS['Rejected']||0,totalMissed],colors:['#10B981','#EF4444','#F97316','#9F1239','#F59E0B']},
-    trend:{labels:_trendLabels,sub:dateRange.map(dt=>subs.filter(s=>s.date===dt).length),late:dateRange.map(dt=>subs.filter(s=>s.date===dt&&s.status==='Late').length)},
+    trend:{labels:_trendLabels,sub:dateRange.map(dt=>subs.filter(s=>s.date===dt).length),ontime:dateRange.map(dt=>subs.filter(s=>s.date===dt&&s.status==='On Time').length),late:dateRange.map(dt=>subs.filter(s=>s.date===dt&&s.status==='Late').length)},
     dept:{labels:_depArr.map(d=>d.name),total:_depArr.map(d=>d.t),onTime:_depArr.map(d=>d.ot)},
     tickets:{labels:['Open','In Progress','Resolved'],data:[aTickets.filter(t=>t.status==='Open').length,aTickets.filter(t=>t.status==='In Progress').length,aTickets.filter(t=>t.status==='Resolved'||t.status==='Closed').length],colors:['#F59E0B','#0EA5E9','#0E9F6E']},
     compliance:{labels:['Compliant','Non-compliant'],data:[compliantN,nonCompliantN],colors:['#0E9F6E','#BE123C']},
+    emp:{ids:_empRows.map(r=>r.id),labels:_empRows.map(r=>r.name),onTime:_empRows.map(r=>r.ot),late:_empRows.map(r=>r.late),pend:_empRows.map(r=>r.pend)},
     top:{labels:topU.slice(0,8).map(x=>fullName(x.u)),data:topU.slice(0,8).map(x=>x.n)}
   };
+  _AFiltered={subs:subs.slice(),tickets:aTickets.slice(),missed:_missedList,compliant:_comp,nonCompliant:_noncomp,dateMap:_dateMap};
   const _cc='background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm);padding:18px';
   const _ct='font-size:14px;font-weight:700;color:var(--c-text);margin-bottom:12px';
   const _view=S.dashView==='details'?'details':'visuals';
@@ -7008,6 +7018,7 @@ function analyticsPage(){
     <div style="${_cc}"><div class="fd" style="${_ct}">Department performance</div><div style="position:relative;height:230px"><canvas id="aChartDept" data-chart="department"></canvas></div></div>
     <div style="${_cc}"><div class="fd" style="${_ct}">Tickets</div><div style="position:relative;height:230px"><canvas id="aChartTickets" data-chart="tickets"></canvas></div></div>
   </div>
+  <div style="${_cc};margin-bottom:14px"><div class="fd" style="${_ct};display:flex;align-items:center;justify-content:space-between">By employee${fArr('users').length?'<span style="font-size:11px;font-weight:600;color:var(--c-brand-ink);background:var(--c-brand-soft);padding:2px 9px;border-radius:99px">filtered</span>':'<span style="font-size:11px;font-weight:500;color:var(--c-text-3)">top 15 · click a bar for detail</span>'}</div><div style="position:relative;height:${Math.max(220,(_AData.emp.ids.length||1)*34+60)}px"><canvas id="aChartEmp" data-chart="by-employee"></canvas></div></div>
   <div class="achart-grid" style="margin-bottom:14px">
     <div style="${_cc}"><div class="fd" style="${_ct}">Compliance</div><div style="position:relative;height:210px"><canvas id="aChartCompliance" data-chart="compliance"></canvas></div></div>
     <div style="${_cc}"><div class="fd" style="${_ct}">Top contributors</div>
@@ -7117,21 +7128,25 @@ function _drawHrmCharts(){
   const T=_aChartTheme(),D=_HRMData;
   const mk=(id,cfg)=>{const cv=document.getElementById(id);if(!cv)return;try{_aCharts.push(new Chart(cv.getContext('2d'),cfg));}catch(e){}};
   const legB={legend:{position:'bottom',labels:{color:T.tick,font:{size:11},boxWidth:12,padding:10}}};
-  mk('hrmChartWorked',{type:'bar',data:{labels:D.labels,datasets:[{label:'Worked hrs',data:D.worked,backgroundColor:'#0E9F6E',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10}},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
-  mk('hrmChartLate',{type:'bar',data:{labels:D.labels,datasets:[{label:'Lates',data:D.lates,backgroundColor:'#F59E0B',borderRadius:4},{label:'Absences',data:D.absences,backgroundColor:'#EF4444',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
-  mk('hrmChartLeave',{type:'bar',data:{labels:D.labels,datasets:[{label:'Taken',data:D.taken,backgroundColor:'#0EA5E9',borderRadius:4},{label:'Remaining',data:D.remaining,backgroundColor:'#CBD5E1',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,scales:{x:{stacked:true,beginAtZero:true,ticks:{color:T.tick,font:{size:10}},grid:{color:T.grid}},y:{stacked:true,ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+  const clk=_aClick(i=>{const id=D.ids&&D.ids[i];if(id)App._hrmDrill(id);});
+  mk('hrmChartWorked',{type:'bar',data:{labels:D.labels,datasets:[{label:'Worked hrs',data:D.worked,backgroundColor:'#0E9F6E',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},onHover:_aHover,onClick:clk,scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10}},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+  mk('hrmChartLate',{type:'bar',data:{labels:D.labels,datasets:[{label:'Lates',data:D.lates,backgroundColor:'#F59E0B',borderRadius:4},{label:'Absences',data:D.absences,backgroundColor:'#EF4444',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,onHover:_aHover,onClick:clk,scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+  mk('hrmChartLeave',{type:'bar',data:{labels:D.labels,datasets:[{label:'Taken',data:D.taken,backgroundColor:'#0EA5E9',borderRadius:4},{label:'Remaining',data:D.remaining,backgroundColor:'#CBD5E1',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,onHover:_aHover,onClick:clk,scales:{x:{stacked:true,beginAtZero:true,ticks:{color:T.tick,font:{size:10}},grid:{color:T.grid}},y:{stacked:true,ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
 }
+function _aClick(fn){return (e,els)=>{if(els&&els.length)fn(els[0].index,els[0].datasetIndex);};}
+function _aHover(e,els){try{e.native.target.style.cursor=(els&&els.length)?'pointer':'default';}catch(_){}}
 function _drawAnalyticsCharts(){
   if(typeof Chart==='undefined'||!_AData)return;
   _destroyACharts();
-  const T=_aChartTheme();
+  const T=_aChartTheme(),A=_AData;
   const mk=(id,cfg)=>{const cv=document.getElementById(id);if(!cv)return;try{_aCharts.push(new Chart(cv.getContext('2d'),cfg));}catch(e){}};
   const legB={legend:{position:'bottom',labels:{color:T.tick,font:{size:11},boxWidth:12,padding:10}}};
-  mk('aChartStatus',{type:'doughnut',data:{labels:_AData.status.labels,datasets:[{data:_AData.status.data,backgroundColor:_AData.status.colors,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:legB}});
-  mk('aChartTrend',{type:'line',data:{labels:_AData.trend.labels,datasets:[{label:'Submitted',data:_AData.trend.sub,borderColor:'#0EA5E9',backgroundColor:'rgba(14,165,233,0.12)',fill:true,tension:0.3,pointRadius:2,borderWidth:2},{label:'Late',data:_AData.trend.late,borderColor:'#EF4444',backgroundColor:'rgba(239,68,68,0.10)',fill:true,tension:0.3,pointRadius:2,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:legB,scales:{x:{ticks:{color:T.tick,font:{size:10},maxRotation:0,autoSkip:true,maxTicksLimit:8},grid:{display:false}},y:{beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}}}}});
-  mk('aChartDept',{type:'bar',data:{labels:_AData.dept.labels,datasets:[{label:'On time',data:_AData.dept.onTime,backgroundColor:'#0E9F6E',borderRadius:4},{label:'Total',data:_AData.dept.total,backgroundColor:'#CBD5E1',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
-  mk('aChartTickets',{type:'doughnut',data:{labels:_AData.tickets.labels,datasets:[{data:_AData.tickets.data,backgroundColor:_AData.tickets.colors,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:legB}});
-  mk('aChartCompliance',{type:'doughnut',data:{labels:_AData.compliance.labels,datasets:[{data:_AData.compliance.data,backgroundColor:_AData.compliance.colors,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:legB}});
+  mk('aChartStatus',{type:'doughnut',data:{labels:A.status.labels,datasets:[{data:A.status.data,backgroundColor:A.status.colors,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:legB,onHover:_aHover,onClick:_aClick(i=>App._chartDrill('status',A.status.labels[i]))}});
+  mk('aChartTrend',{type:'line',data:{labels:A.trend.labels,datasets:[{label:'Submitted',data:A.trend.sub,borderColor:'#0EA5E9',backgroundColor:'rgba(14,165,233,0.12)',fill:true,tension:0.3,pointRadius:2,borderWidth:2},{label:'On time',data:A.trend.ontime,borderColor:'#0E9F6E',fill:false,tension:0.3,pointRadius:2,borderWidth:2},{label:'Late',data:A.trend.late,borderColor:'#EF4444',fill:false,tension:0.3,pointRadius:2,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:legB,onHover:_aHover,onClick:_aClick(i=>App._chartDrill('date',A.trend.labels[i])),scales:{x:{ticks:{color:T.tick,font:{size:10},maxRotation:0,autoSkip:true,maxTicksLimit:8},grid:{display:false}},y:{beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}}}}});
+  mk('aChartDept',{type:'bar',data:{labels:A.dept.labels,datasets:[{label:'On time',data:A.dept.onTime,backgroundColor:'#0E9F6E',borderRadius:4},{label:'Total',data:A.dept.total,backgroundColor:'#CBD5E1',borderRadius:4}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,onHover:_aHover,onClick:_aClick(i=>App._chartDrill('dept',A.dept.labels[i])),scales:{x:{beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}},y:{ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+  mk('aChartTickets',{type:'doughnut',data:{labels:A.tickets.labels,datasets:[{data:A.tickets.data,backgroundColor:A.tickets.colors,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'58%',plugins:legB,onHover:_aHover,onClick:_aClick(i=>App._chartDrill('ticket',A.tickets.labels[i]))}});
+  mk('aChartEmp',{type:'bar',data:{labels:A.emp.labels,datasets:[{label:'On time',data:A.emp.onTime,backgroundColor:'#0E9F6E',borderRadius:3},{label:'Late',data:A.emp.late,backgroundColor:'#EF4444',borderRadius:3},{label:'Pending',data:A.emp.pend,backgroundColor:'#F59E0B',borderRadius:3}]},options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:legB,onHover:_aHover,onClick:_aClick(i=>{const id=A.emp.ids[i];if(id)App._userDrill(id);}),scales:{x:{stacked:true,beginAtZero:true,ticks:{color:T.tick,font:{size:10},precision:0},grid:{color:T.grid}},y:{stacked:true,ticks:{color:T.tick,font:{size:11}},grid:{display:false}}}}});
+  mk('aChartCompliance',{type:'doughnut',data:{labels:A.compliance.labels,datasets:[{data:A.compliance.data,backgroundColor:A.compliance.colors,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,cutout:'62%',plugins:legB,onHover:_aHover,onClick:_aClick(i=>App._chartDrill('compliance',A.compliance.labels[i]))}});
 }
 function _drawHomeCharts(){
   if(typeof Chart==='undefined'||!_HData)return;
@@ -7148,6 +7163,39 @@ App._exportReport=()=>{
   toast(cvs.length?('Exporting '+cvs.length+' chart'+(cvs.length!==1?'s':'')+' + data…'):'Exporting data…');
   cvs.forEach((cv,i)=>setTimeout(()=>{try{const a=document.createElement('a');a.href=_pngWithBg(cv);a.download='bridge_'+(cv.dataset.chart||'chart')+'_'+todayISO()+'.png';document.body.appendChild(a);a.click();a.remove();}catch(e){}},i*400));
   setTimeout(()=>{try{App._exportCSV();}catch(e){}},cvs.length*400+250);
+};
+// ── Click-to-drill: clicking any analytics chart opens the underlying rows in a popup ──
+function _subListModal(title,subs){
+  const rows=subs.slice().sort((a,b)=>(b.submittedAt||b.date||'').localeCompare(a.submittedAt||a.date||'')).slice(0,300);
+  modalShell({title,sub:subs.length+' item'+(subs.length!==1?'s':''),size:'max-w-lg',
+    body:rows.length?rows.map(s=>{const u=uById(s.userId),c=clById(s.checklistId);return `<div onclick="App.closeModal();App.viewSub('${s.id}')" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:pointer">${avatar(u,'w-8 h-8','text-[11px]')}<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--c-text);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(u?fullName(u):'—')}</div><div style="font-size:11px;color:var(--c-text-3);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(c?c.name:'[deleted checklist]')} · ${fmtS(s.date)}</div></div>${chip(s.status)}</div>`;}).join(''):'<p style="font-size:13px;color:var(--c-text-3);text-align:center;padding:20px">No items.</p>'});
+}
+function _missedDrillModal(missed){
+  const rows=(missed||[]).slice(0,300);
+  modalShell({title:'Missed checklists',sub:(missed||[]).length+' missed',size:'max-w-lg',
+    body:rows.length?rows.map(m=>{const u=uById(m.userId),c=clById(m.checklistId);return `<div onclick="App.closeModal();App._userDrill('${m.userId}')" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:pointer">${avatar(u,'w-8 h-8','text-[11px]')}<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--c-text)">${esc(u?fullName(u):'—')}</div><div style="font-size:11px;color:var(--c-text-3)">${esc(c?c.name:'[deleted]')} · ${fmtS(m.date)}</div></div><span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;background:var(--c-warn-soft);color:var(--c-warn-ink)">Missed</span></div>`;}).join(''):'<p style="font-size:13px;color:var(--c-text-3);text-align:center;padding:20px">No missed checklists in range.</p>'});
+}
+function _ticketDrillModal(key,tickets){
+  const m={'Open':t=>t.status==='Open','In Progress':t=>t.status==='In Progress','Resolved':t=>t.status==='Resolved'||t.status==='Closed'};
+  const list=(tickets||[]).filter(m[key]||(()=>true));
+  modalShell({title:key+' tickets',sub:list.length+' ticket'+(list.length!==1?'s':''),size:'max-w-lg',
+    body:list.length?list.slice(0,300).map(t=>{const u=uById(t.assignedTo);return `<div onclick="App.closeModal();App.go('tickets')" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:pointer"><div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;color:var(--c-text);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${esc(t.title||'Ticket')}</div><div style="font-size:11px;color:var(--c-text-3)">${esc(t.priority||'')}${u?' · '+esc(fullName(u)):''}</div></div>${chip(t.status)}</div>`;}).join(''):'<p style="font-size:13px;color:var(--c-text-3);text-align:center;padding:20px">No tickets.</p>'});
+}
+App._chartDrill=(kind,key)=>{
+  const D=_AFiltered||{};
+  if(kind==='status'){
+    if(key==='Missed')return _missedDrillModal(D.missed);
+    return _subListModal(key+' submissions',(D.subs||[]).filter(s=>s.status===key));
+  }
+  if(kind==='date'){const full=(D.dateMap||{})[key]||key;return _subListModal('Submissions · '+fmtS(full),(D.subs||[]).filter(s=>s.date===full));}
+  if(kind==='dept')return _subListModal(key+' · submissions',(D.subs||[]).filter(s=>{const c=clById(s.checklistId);return c&&(c.department||'—')===key;}));
+  if(kind==='compliance')return _subListModal(key+' submissions',key==='Compliant'?(D.compliant||[]):(D.nonCompliant||[]));
+  if(kind==='ticket')return _ticketDrillModal(key,D.tickets);
+};
+App._hrmDrill=(uid)=>{
+  const r=_HRMData&&_HRMData.byId&&_HRMData.byId[uid];if(!r)return;const u=r.u;
+  modalShell({title:fullName(u),sub:(u.position||'')+(u.department?' · '+u.department:''),size:'max-w-sm',
+    body:'<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">'+[['Worked hrs',r.worked+'h'],['Lates',r.lates],['Absences',r.absences],['Leaves taken',r.leavesTaken],['Remaining',r.remaining]].map(([l,v])=>'<div style="background:var(--c-surface-2);border-radius:12px;padding:14px;text-align:center"><div class="fd" style="font-size:22px;font-weight:800;color:var(--c-text)">'+v+'</div><div style="font-size:11px;color:var(--c-text-3);margin-top:2px">'+l+'</div></div>').join('')+'</div>'});
 };
 
 /* ===== AUDIT / NOTIF / PROFILE / SETTINGS ===== */
@@ -9706,7 +9754,7 @@ function hrmAnalyticsPage(){
   const _ct='font-size:14px;font-weight:700;color:var(--c-text);margin-bottom:12px';
   const _hv=S.hrmView==='details'?'details':'visuals';
   const _hrmTop=rows.slice().sort((a,b)=>b.worked-a.worked).slice(0,12);
-  _HRMData={labels:_hrmTop.map(r=>fullName(r.u)),worked:_hrmTop.map(r=>r.worked),lates:_hrmTop.map(r=>r.lates),absences:_hrmTop.map(r=>r.absences),taken:_hrmTop.map(r=>r.leavesTaken),remaining:_hrmTop.map(r=>r.remaining)};
+  _HRMData={ids:_hrmTop.map(r=>r.u.id),byId:Object.fromEntries(_hrmTop.map(r=>[r.u.id,r])),labels:_hrmTop.map(r=>fullName(r.u)),worked:_hrmTop.map(r=>r.worked),lates:_hrmTop.map(r=>r.lates),absences:_hrmTop.map(r=>r.absences),taken:_hrmTop.map(r=>r.leavesTaken),remaining:_hrmTop.map(r=>r.remaining)};
   const _stb=(v,lbl,icn)=>`<button onclick="S.hrmView='${v}';rr()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;border:1px solid ${_hv===v?'var(--c-text)':'var(--c-border)'};background:${_hv===v?'var(--c-text)':'var(--c-surface)'};color:${_hv===v?'#fff':'var(--c-text-2)'};font-size:13px;font-weight:700;cursor:pointer">${ic(icn,'w-4 h-4')}${lbl}</button>`;
   const _subTab=`<div style="display:flex;gap:8px;margin-bottom:16px">${_stb('visuals','Visuals','chart')}${_stb('details','Details','list')}</div>`;
   const visualsHTML=rows.length?`<div class="achart-grid" style="margin-bottom:14px">
