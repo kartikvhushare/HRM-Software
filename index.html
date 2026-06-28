@@ -1283,7 +1283,7 @@ function visU(){if(isAdmin())return DB.users;return[me(),...subTree(S.uid)].filt
 const isHR=()=>{const u=me();return !!u&&(u.hrm?.isHR===true);};
 const _canReport=()=>{const p=me()?.hrm?.reportPerms||{};return Object.values(p).some(Boolean);};
 const activeProfile=()=>DB.hrmConfig?.profiles?.[DB.hrmConfig?.activeProfile]||{};
-const userProfileId=u=>u?.hrm?.profileId||DB.hrmConfig?.activeProfile||'UAE';
+const userProfileId=u=>DB.hrmConfig?.activeProfile||'UAE'; // profiles removed — everyone shares one policy set
 // LV-6: resolve the profile config for a SPECIFIC user (grace/autoCloseAt/schedule), not the globally
 //   selected profile — mirrors how _leaveYearOf reads userProfileId(u). Falls back to active profile.
 const userProfile=u=>DB.hrmConfig?.profiles?.[userProfileId(u)]||activeProfile();
@@ -2597,12 +2597,11 @@ function _hrmUserSection(u){
   const h=(u&&u.hrm)||{schedule:{in:'09:00',out:'18:00',hours:9,workWeek:5,offDays:['Sun']},reportPerms:{}};
   const s=h.schedule||{in:'09:00',out:'18:00',hours:9,workWeek:5,offDays:['Sun']};
   const off=new Set(s.offDays||[]);
-  const profs=Object.keys((DB.hrmConfig?.profiles)||{UAE:1});
   const rpOpts=[['','— Base role default —'],...Object.values(DB.roleProfiles||{}).map(p=>[p.id,p.name])];
   return `<div class="bg-ink-50 rounded-2xl p-4 space-y-3"><p class="text-[10px] font-bold text-ink-400 uppercase tracking-wide">HRM — Attendance &amp; Leave</p>
     <div class="grid grid-cols-2 gap-3">${fld('Date of birth','u-dob',h.dob||'','date')}${fld('Joining date','u-join',h.joiningDate||'','date')}</div>
     <div class="grid grid-cols-3 gap-3">${fld('Clock-in','u-cin',s.in||'09:00','time')}${fld('Clock-out','u-cout',s.out||'18:00','time')}${fld('Total hours','u-chrs',s.hours??9,'number')}</div>
-    <div class="grid grid-cols-2 gap-3">${selF('Work week','u-ww',[['5','5-day week'],['6','6-day week']],String(s.workWeek||5))}${selF('HRM profile','u-prof',profs.map(k=>[k,k]),h.profileId||profs[0])}</div>
+    <div>${selF('Work week','u-ww',[['5','5-day week'],['6','6-day week']],String(s.workWeek||5))}</div>
     ${selF('Office location (geofence)','u-loc',[['','— None —'],...DB.locations.filter(l=>l.status==='Active').map(l=>[l.id,l.name])],h.locationId||'')}
     <div><label class="block text-xs font-semibold text-ink-500 mb-1.5">Weekly off-days</label><div style="display:flex;gap:6px;flex-wrap:wrap">${DAYS3.map(d=>`<button type="button" class="dchip${off.has(d)?' on':''}" onclick="this.classList.toggle('on')" data-day="${d}">${d}</button>`).join('')}</div></div>
     ${mkTog('u-ishr',h.isHR??false,'HR (configures HRM, 2nd-stage approver)')}
@@ -9235,9 +9234,8 @@ function hrmConfigPage(){
   // H2: HR Config uses its OWN tab-state key (cfgtab); coerce unknown values to the default so the page never renders blank.
   let tab=S.filters.cfgtab||'policy';
   if(!TABS.some(t=>t[0]===tab))tab='policy';
-  const profId=S.filters.cfgProf||DB.hrmConfig.activeProfile||'UAE';
+  const profId=DB.hrmConfig.activeProfile||'UAE';
   const prof=DB.hrmConfig.profiles[profId]||{};
-  const profSel=`<select onchange="S.filters.cfgProf=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf">${Object.keys(DB.hrmConfig.profiles).map(k=>`<option value="${k}"${k===profId?' selected':''}>${esc(DB.hrmConfig.profiles[k].label||k)}</option>`).join('')}</select>`;
   let body='';
   if(tab==='policy'){
     const canEdit=can('hrSettings','edit');
@@ -9256,7 +9254,7 @@ function hrmConfigPage(){
     const types=_typesFor(profId);
     // O14: India leave types intentionally seed with entitlement 0 (HR fills statutory values per
     //   company policy) — surface a note so an empty entitlement isn't mistaken for "config broken".
-    const zeroNote=(profId==='India'||types.some(t=>t.enabled&&(t.entitlement||0)===0&&(t.accrualPerMonth||0)===0&&!_isCompOffLt(t)))
+    const zeroNote=(types.some(t=>t.enabled&&(t.entitlement||0)===0&&(t.accrualPerMonth||0)===0&&!_isCompOffLt(t)))
       ?`<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:11px 14px;margin-bottom:8px;font-size:12px;color:#92400E">Note: types seeded with <strong>0 entitlement</strong> are placeholders — set each type's entitlement &amp; accrual here to match your company policy. They are not a bug.</div>`
       :'';
     body=`<div class="space-y-2">${zeroNote}${types.map(lt=>`<div style="background:#fff;border-radius:14px;border:1px solid #ECEDF0;padding:14px">
@@ -9268,7 +9266,7 @@ function hrmConfigPage(){
       <div class="grid grid-cols-2 gap-2"><input id="hol-date" type="date" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"/><input id="hol-name" placeholder="Holiday name" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"/></div>
       ${btn('Add holiday',`App.addHoliday('${profId}')`,{variant:'primary',attrs:'style="margin-top:8px;width:100%"'})}
     </div>
-    ${hols.length?hols.map(h=>`<div style="display:flex;align-items:center;justify-content:space-between;background:#fff;border-radius:12px;border:1px solid #ECEDF0;padding:11px 14px;margin-bottom:6px"><div><div style="font-size:13px;font-weight:600">${esc(h.name)}</div><div style="font-size:12px;color:#9CA3AF">${fmtD(h.date)}</div></div><button onclick="App.delHoliday('${h.id}')" style="color:#D1D5DB;background:none;border:none;cursor:pointer">${ic('trash','w-4 h-4')}</button></div>`).join(''):empty('pin','No holidays','Add public holidays for this profile.')}`;
+    ${hols.length?hols.map(h=>`<div style="display:flex;align-items:center;justify-content:space-between;background:#fff;border-radius:12px;border:1px solid #ECEDF0;padding:11px 14px;margin-bottom:6px"><div><div style="font-size:13px;font-weight:600">${esc(h.name)}</div><div style="font-size:12px;color:#9CA3AF">${fmtD(h.date)}</div></div><button onclick="App.delHoliday('${h.id}')" style="color:#D1D5DB;background:none;border:none;cursor:pointer">${ic('trash','w-4 h-4')}</button></div>`).join(''):empty('pin','No holidays','Add public holidays.')}`;
   }else if(tab==='bulk'){
     body=_bulkBalanceEditor();
   }else if(tab==='compoff'){
@@ -9277,7 +9275,7 @@ function hrmConfigPage(){
     const logs=(DB.hrmAudit||[]).slice(0,80);
     body=`<div style="background:#fff;border-radius:14px;border:1px solid #ECEDF0;overflow:hidden">${logs.length?logs.map(l=>`<div style="display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid #F3F4F6"><div style="flex:1"><div style="font-size:13px;font-weight:600">${esc(l.action)}</div><div style="font-size:12px;color:#9CA3AF">${esc(l.target)}</div></div><div style="font-size:11px;color:#9CA3AF;white-space:nowrap">${esc(l.actor)} · ${new Date(l.time).toLocaleString('en-GB')}</div></div>`).join(''):empty('audit','No HRM activity','')}</div>`;
   }
-  return `<div class="fade">${hdr('HR Config','Leave policy, timing, approval flows & holidays — per company/country profile',profSel)}
+  return `<div class="fade">${hdr('HR Config','Leave policy, timing, approval flows & holidays')}
     <div style="margin-bottom:16px">${chipBar(TABS,tab,'App._setCfgTab')}</div>
     ${body}</div>`;
 }
@@ -9292,7 +9290,6 @@ function _balScopeUsers(){
   let list=scopedUsers('leaveBalances').filter(u=>u.role!=='Admin'&&u.status!=='Inactive');
   if(f.cfgBalDept)list=list.filter(u=>u.department===f.cfgBalDept);
   if(f.cfgBalLoc)list=list.filter(u=>(u.hrm?.locationId||'')===f.cfgBalLoc);
-  if(f.cfgBalProf)list=list.filter(u=>userProfileId(u)===f.cfgBalProf);
   if(f.cfgBalQ){const q=f.cfgBalQ.toLowerCase();list=list.filter(u=>fullName(u).toLowerCase().includes(q)||(u.department||'').toLowerCase().includes(q));}
   return list.sort((a,b)=>fullName(a).localeCompare(fullName(b)));
 }
@@ -9311,12 +9308,11 @@ function _balFilterBar(prefix){
     <div style="position:relative;flex:1;min-width:180px"><span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:#9CA3AF">${ic('search','w-4 h-4')}</span><input id="${prefix}-search" value="${esc(f.cfgBalQ||'')}" onchange="${fl}" oninput="S.filters.cfgBalQ=this.value;App._searchRR('${prefix}-search')" placeholder="Search employees…" style="width:100%;padding:9px 12px 9px 34px;border:1.5px solid #ECEDF0;border-radius:11px;font-size:13px"/></div>
     <select onchange="${fl}S.filters.cfgBalDept=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All departments</option>${DB.departments.map(d=>`<option${f.cfgBalDept===d.name?' selected':''}>${esc(d.name)}</option>`).join('')}</select>
     <select onchange="${fl}S.filters.cfgBalLoc=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All locations</option>${DB.locations.map(l=>`<option value="${l.id}"${f.cfgBalLoc===l.id?' selected':''}>${esc(l.name)}</option>`).join('')}</select>
-    <select onchange="${fl}S.filters.cfgBalProf=this.value;rr()" class="bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm rf"><option value="">All companies/profiles</option>${Object.keys(DB.hrmConfig.profiles||{}).map(k=>`<option value="${k}"${f.cfgBalProf===k?' selected':''}>${esc(DB.hrmConfig.profiles[k].label||k)}</option>`).join('')}</select>
   </div>`;
 }
 function _bulkBalanceEditor(){
   if(!can('leaveBalances','edit'))return empty('lock','Not permitted','You do not have access to edit balances.');
-  const profId=S.filters.cfgProf||DB.hrmConfig.activeProfile||'UAE';
+  const profId=DB.hrmConfig.activeProfile||'UAE';
   const users=_balScopeUsers();
   // Columns = enabled, non-comp-off leave types for the selected company/profile.
   const cols=_typesFor(profId).filter(t=>t.enabled&&!_isCompOffLt(t));
@@ -9719,8 +9715,8 @@ function hrmAnalyticsPage(){
   if(!scope.length||!scope.some(u=>u.id===S.uid))scope=[me(),...scope.filter(u=>u.id!==S.uid)];
   // apply filters
   let users=scope.slice();
+  if(f.haUser)users=users.filter(u=>u.id===f.haUser);
   if(f.haDept)users=users.filter(u=>u.department===f.haDept);
-  if(f.haProf)users=users.filter(u=>userProfileId(u)===f.haProf);
   if(f.haLoc)users=users.filter(u=>u.hrm?.locationId===f.haLoc); // L6: real location filter (DB.locations)
   const d1=f.haD1||todayISO().slice(0,8)+'01';
   const d2=f.haD2||todayISO();
@@ -9738,14 +9734,19 @@ function hrmAnalyticsPage(){
   });
   const allLts=_typesFor(userProfileId(me())||DB.hrmConfig.activeProfile);
   const canDl=can('reports','download');
-  const filterBar=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
-    <input type="date" value="${d1}" onchange="S.filters.haD1=this.value;rr()" class="ui-input rf" style="width:auto"/>
-    <input type="date" value="${d2}" onchange="S.filters.haD2=this.value;rr()" class="ui-input rf" style="width:auto"/>
-    <select onchange="S.filters.haDept=this.value;rr()" class="ui-select rf" style="width:auto"><option value="">All depts</option>${DB.departments.map(d=>`<option${f.haDept===d.name?' selected':''}>${esc(d.name)}</option>`).join('')}</select>
-    <select onchange="S.filters.haProf=this.value;rr()" class="ui-select rf" style="width:auto"><option value="">All profiles</option>${Object.keys(DB.hrmConfig.profiles||{}).map(k=>`<option value="${k}"${f.haProf===k?' selected':''}>${esc(k)}</option>`).join('')}</select>
-    <select onchange="S.filters.haLoc=this.value;rr()" class="ui-select rf" style="width:auto"><option value="">All locations</option>${DB.locations.map(l=>`<option value="${l.id}"${f.haLoc===l.id?' selected':''}>${esc(l.name)}</option>`).join('')}</select>
-    <select onchange="S.filters.haLt=this.value;rr()" class="ui-select rf" style="width:auto"><option value="">All leave types</option>${allLts.map(t=>`<option value="${t.id}"${f.haLt===t.id?' selected':''}>${esc(t.name)}</option>`).join('')}</select>
-    ${canDl?btnP('Download CSV','App.downloadPayroll()','download'):''}
+  const _lblS='display:block;font-size:10.5px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px';
+  const _anyHa=f.haUser||f.haDept||f.haLoc||f.haLt||f.haD1||f.haD2;
+  const filterBar=`<div style="background:var(--c-surface);border:1px solid var(--c-border);border-radius:var(--r-lg);box-shadow:var(--sh-sm);padding:14px 16px;margin-bottom:16px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:10px 12px;align-items:end">
+      <div><label style="${_lblS}">From</label><input type="date" value="${d1}" onchange="S.filters.haD1=this.value;rr()" class="ui-input rf" style="width:100%"/></div>
+      <div><label style="${_lblS}">To</label><input type="date" value="${d2}" onchange="S.filters.haD2=this.value;rr()" class="ui-input rf" style="width:100%"/></div>
+      <div><label style="${_lblS}">Employee</label><select onchange="S.filters.haUser=this.value;rr()" class="ui-select rf" style="width:100%"><option value="">All employees</option>${scope.slice().sort((a,b)=>fullName(a).localeCompare(fullName(b))).map(u=>`<option value="${u.id}"${f.haUser===u.id?' selected':''}>${esc(fullName(u))}</option>`).join('')}</select></div>
+      <div><label style="${_lblS}">Department</label><select onchange="S.filters.haDept=this.value;rr()" class="ui-select rf" style="width:100%"><option value="">All departments</option>${DB.departments.map(d=>`<option${f.haDept===d.name?' selected':''}>${esc(d.name)}</option>`).join('')}</select></div>
+      <div><label style="${_lblS}">Location</label><select onchange="S.filters.haLoc=this.value;rr()" class="ui-select rf" style="width:100%"><option value="">All locations</option>${DB.locations.map(l=>`<option value="${l.id}"${f.haLoc===l.id?' selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
+      <div><label style="${_lblS}">Leave type</label><select onchange="S.filters.haLt=this.value;rr()" class="ui-select rf" style="width:100%"><option value="">All leave types</option>${allLts.map(t=>`<option value="${t.id}"${f.haLt===t.id?' selected':''}>${esc(t.name)}</option>`).join('')}</select></div>
+      ${_anyHa?`<div><label style="${_lblS}">&nbsp;</label><button onclick="['haUser','haDept','haLoc','haLt','haD1','haD2'].forEach(k=>delete S.filters[k]);rr()" class="ui-btn ui-btn-subtle ui-btn-md" style="width:100%">Clear filters</button></div>`:''}
+      ${canDl?`<div><label style="${_lblS}">&nbsp;</label><button onclick="App.downloadPayroll()" class="ui-btn ui-btn-primary ui-btn-md" style="width:100%">${ic('download','w-4 h-4')}Download CSV</button></div>`:''}
+    </div>
   </div>`;
   const tot=rows.reduce((a,r)=>({w:a.w+r.worked,l:a.l+r.lates,lv:a.lv+r.leavesTaken,ab:a.ab+r.absences}),{w:0,l:0,lv:0,ab:0});
   const stats=`<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">${statCard('Total worked hrs',_r2(tot.w),'brand')}${statCard('Late check-ins',tot.l,'amber')}${statCard('Leave days taken',_r2(tot.lv),'sky')}${statCard('Absences',tot.ab,'rose')}</div>`;
@@ -9797,8 +9798,8 @@ App.downloadPayroll=()=>{
   let scope=scopedUsers('reports');
   if(!scope.length||!scope.some(u=>u.id===S.uid))scope=[me(),...scope.filter(u=>u&&u.id!==S.uid)].filter(Boolean);
   let users=scope.slice();
+  if(f.haUser)users=users.filter(u=>u.id===f.haUser);
   if(f.haDept)users=users.filter(u=>u.department===f.haDept);
-  if(f.haProf)users=users.filter(u=>userProfileId(u)===f.haProf);
   if(f.haLoc)users=users.filter(u=>u.hrm?.locationId===f.haLoc); // L6: real location filter (DB.locations)
   const d1=f.haD1||todayISO().slice(0,8)+'01',d2=f.haD2||todayISO();
   const rows=[['Employee','Email','Department','Location','Worked Hours','Late Check-ins','Leaves Taken','Leaves Remaining','Absences','Period']];
