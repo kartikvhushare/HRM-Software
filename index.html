@@ -6749,7 +6749,7 @@ App._aStatDrill=(type)=>{
   const f=S.filters;
   const fArr=k=>Array.isArray(f[k])?f[k]:(f[k]?[f[k]]:[]);
   let subs=DB.submissions;
-  if(!isAdmin())subs=subs.filter(s=>subTree(S.uid).some(u=>u.id===s.userId)||s.userId===S.uid);
+  if(!isAdmin()){const _sc=_reportScopeIds();subs=subs.filter(s=>_sc.has(s.userId));}
   if(fArr('users').length)subs=subs.filter(s=>fArr('users').includes(s.userId));
   if(fArr('deps').length)subs=subs.filter(s=>{const c=clById(s.checklistId);return c&&fArr('deps').includes(c.department);});
   if(fArr('locs').length)subs=subs.filter(s=>{const c=clById(s.checklistId);return c&&fArr('locs').some(l=>(c.locationIds||[]).includes(l));});
@@ -6784,7 +6784,7 @@ App._aStatDrill=(type)=>{
     const list=subs.filter(s=>s.status==='Late').sort((a,b)=>(b.submittedAt||'').localeCompare(a.submittedAt||''));
     title='Late ('+list.length+')';rows=list.map(subRow).join('');emptyMsg='No late submissions.';
   } else if(type==='missed'){
-    const relevantUsers=isAdmin()?DB.users:[me(),...subTree(S.uid)].filter(Boolean);
+    const relevantUsers=isAdmin()?DB.users:DB.users.filter(u=>_reportScopeIds().has(u.id));
     const dr1=f.dr1||(new Date(Date.now()-30*86400000).toISOString().slice(0,10));
     const dr2=f.dr2||today;
     const dateRange=[];
@@ -6844,11 +6844,14 @@ App._aStatDrill=(type)=>{
 };
 
 let _AData=null,_HData=null,_HRMData=null,_AFiltered=null,_aCharts=[];
+// Who the dashboard analytics can see — the SAME reports-permission scope HRM Analytics uses, so the
+// two pages always show the same set of people (instead of a hard-coded reporting subtree).
+function _reportScopeIds(){const s=new Set(scopedUsers('reports').map(u=>u.id));s.add(S.uid);return s;}
 function analyticsPage(){
   const today=todayISO();
   // Collect all relevant submissions
   let subs=DB.submissions;
-  if(!isAdmin())subs=subs.filter(s=>subTree(S.uid).some(u=>u.id===s.userId)||s.userId===S.uid);
+  if(!isAdmin()){const _sc=_reportScopeIds();subs=subs.filter(s=>_sc.has(s.userId));}
   const f=S.filters;
   const fArr=k=>Array.isArray(f[k])?f[k]:(f[k]?[f[k]]:[]);
   if(fArr('users').length)  subs=subs.filter(s=>fArr('users').includes(s.userId));
@@ -6877,7 +6880,7 @@ function analyticsPage(){
   subs.forEach(s=>{const c=clById(s.checklistId);if(!c||!(c.questionIds||[]).length)return;const n=_subEscalationCount(c,s);if(n>0){nonCompliantN++;totalEscalations+=n;}else{compliantN++;}});
 
   // Count missed (assigned but no submission for past dates)
-  const relevantUsers=isAdmin()?DB.users:[me(),...subTree(S.uid)].filter(Boolean);
+  const relevantUsers=isAdmin()?DB.users:DB.users.filter(u=>_reportScopeIds().has(u.id));
   const dateRange=[];
   const dr1=f.dr1||(new Date(Date.now()-30*86400000).toISOString().slice(0,10));
   const dr2=f.dr2||today;
@@ -8027,7 +8030,7 @@ function settingsPage(){
 }
 
 App._exportCSV=()=>{
-  let subs=DB.submissions;if(!isAdmin())subs=subs.filter(s=>subTree(S.uid).some(u=>u.id===s.userId)||s.userId===S.uid);
+  let subs=DB.submissions;if(!isAdmin()){const _sc=_reportScopeIds();subs=subs.filter(s=>_sc.has(s.userId));}
   const f=S.filters;const fArr=k=>Array.isArray(f[k])?f[k]:(f[k]?[f[k]]:[]);
   if(fArr('users').length)subs=subs.filter(s=>fArr('users').includes(s.userId));
   if(fArr('deps').length)subs=subs.filter(s=>{const c=clById(s.checklistId);return fArr('deps').includes(c?.department);});
@@ -9758,6 +9761,10 @@ function hrmAnalyticsPage(){
   const _cc='background:var(--c-surface);border-radius:var(--r-lg);border:1px solid var(--c-border);box-shadow:var(--sh-sm);padding:18px';
   const _ct='font-size:14px;font-weight:700;color:var(--c-text);margin-bottom:12px';
   const _hv=S.hrmView==='details'?'details':'visuals';
+  // Subtitle reflects the ACTUAL resolved reports-scope (not just the role flag), so a manager granted
+  // a broader scope via a role profile is labelled accurately.
+  const _rsc=scopeOf('reports');
+  const _scopeSuffix=isAdmin()?'':_rsc==='everyone'?' (all staff)':_rsc==='department'?' (your department)':_rsc==='location'?' (your branch)':_rsc==='team'?' (your team)':' (you)';
   const _hrmTop=rows.slice().sort((a,b)=>b.worked-a.worked).slice(0,12);
   _HRMData={ids:_hrmTop.map(r=>r.u.id),byId:Object.fromEntries(_hrmTop.map(r=>[r.u.id,r])),labels:_hrmTop.map(r=>fullName(r.u)),worked:_hrmTop.map(r=>r.worked),lates:_hrmTop.map(r=>r.lates),absences:_hrmTop.map(r=>r.absences),taken:_hrmTop.map(r=>r.leavesTaken),remaining:_hrmTop.map(r=>r.remaining)};
   const _stb=(v,lbl,icn)=>`<button onclick="S.hrmView='${v}';rr()" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:10px;border:1px solid ${_hv===v?'var(--c-text)':'var(--c-border)'};background:${_hv===v?'var(--c-text)':'var(--c-surface)'};color:${_hv===v?'#fff':'var(--c-text-2)'};font-size:13px;font-weight:700;cursor:pointer">${ic(icn,'w-4 h-4')}${lbl}</button>`;
@@ -9767,7 +9774,7 @@ function hrmAnalyticsPage(){
       <div style="${_cc}"><div class="fd" style="${_ct}">Lateness &amp; absences</div><div style="position:relative;height:360px"><canvas id="hrmChartLate" data-chart="lateness-absences"></canvas></div></div>
     </div>
     <div style="${_cc};margin-bottom:14px"><div class="fd" style="${_ct}">Leave: taken vs remaining</div><div style="position:relative;height:360px"><canvas id="hrmChartLeave" data-chart="leave-balance"></canvas></div></div>`:empty('chart','No data','Adjust filters or date range.');
-  return `<div class="fade">${hdr('HRM Analytics','Worked hours, lateness, leaves & absences'+(isAdmin()?'':isHR()?' (all staff except Super Admins)':isMgr()?' (your team)':' (you)'))}${filterBar}${_subTab}${_hv==='visuals'?visualsHTML:(stats+table)}</div>`;
+  return `<div class="fade">${hdr('HRM Analytics','Worked hours, lateness, leaves & absences'+_scopeSuffix)}${filterBar}${_subTab}${_hv==='visuals'?visualsHTML:(stats+table)}</div>`;
 }
 function _deriveAbsences(u,d1,d2){
   // count past working days in range with no attendance record and no approved leave
