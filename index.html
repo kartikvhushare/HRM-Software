@@ -3086,7 +3086,21 @@ function disciplinePage(){
   const canMng=can('discipline','manage');
   const f=scopeFilter('discipline');
   const today=todayISO();
-  const mine=(DB.discipline||[]).filter(d=>canMng||f(d.userId)||d.userId===S.uid).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  let mine=(DB.discipline||[]).filter(d=>canMng||f(d.userId)||d.userId===S.uid).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const F=S.filters;
+  const dPeople=[...new Set(mine.map(d=>d.userId))];
+  if(F.dcUser)mine=mine.filter(d=>d.userId===F.dcUser);
+  if(F.dcLevel)mine=mine.filter(d=>d.level===F.dcLevel);
+  if(F.dcStatus==='active')mine=mine.filter(d=>!d.expiresAt||d.expiresAt>=today);
+  if(F.dcStatus==='expired')mine=mine.filter(d=>d.expiresAt&&d.expiresAt<today);
+  if(F.dcQ){const q=F.dcQ.toLowerCase();mine=mine.filter(d=>((d.reason||'')+' '+(d.note||'')).toLowerCase().includes(q));}
+  const dcBar=`<div class="ui-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin-bottom:12px">
+    <input id="dc-q" value="${esc(F.dcQ||'')}" oninput="S.filters.dcQ=this.value;App._searchRR('dc-q')" placeholder="Search reason…" class="ui-input" style="flex:1;min-width:140px;height:32px;min-height:0;padding:4px 12px;font-size:12.5px"/>
+    <select onchange="S.filters.dcUser=this.value;rr()" class="ui-select" style="font-size:12px;padding:6px 26px 6px 10px;min-height:0;height:32px;width:auto"><option value="">All people</option>${dPeople.map(id=>{const u2=uById(id);return`<option value="${id}" ${F.dcUser===id?'selected':''}>${esc(u2?fullName(u2):id)}</option>`;}).join('')}</select>
+    <select onchange="S.filters.dcLevel=this.value;rr()" class="ui-select" style="font-size:12px;padding:6px 26px 6px 10px;min-height:0;height:32px;width:auto"><option value="">Any level</option>${['Verbal','First','Second','Dismissal'].map(l=>`<option ${F.dcLevel===l?'selected':''}>${l}</option>`).join('')}</select>
+    <select onchange="S.filters.dcStatus=this.value;rr()" class="ui-select" style="font-size:12px;padding:6px 26px 6px 10px;min-height:0;height:32px;width:auto"><option value="">On file + expired</option><option value="active" ${F.dcStatus==='active'?'selected':''}>On file</option><option value="expired" ${F.dcStatus==='expired'?'selected':''}>Expired</option></select>
+    ${(F.dcQ||F.dcUser||F.dcLevel||F.dcStatus)?`<button onclick="S.filters.dcQ='';S.filters.dcUser='';S.filters.dcLevel='';S.filters.dcStatus='';rr()" class="ui-btn ui-btn-ghost ui-btn-sm">Clear</button>`:''}
+  </div>`;
   const lvC={Verbal:['#FFFBEB','#B45309'],First:['#FFF7ED','#C2410C'],Second:['#FFF1F2','#BE123C'],Dismissal:['#1C212B','#fff']};
   const rows=mine.map(d=>{
     const u=uById(d.userId);const by=uById(d.issuedBy);const expired=d.expiresAt&&d.expiresAt<today;
@@ -3106,6 +3120,7 @@ function disciplinePage(){
   }).join('');
   return `<div class="fade">${hdr('Discipline','Warnings on file — auto-expire after 12 months',canMng?btnP('Record warning','App._discNew()','plus'):'')}
     ${_howBar('discipline')}
+    ${dcBar}
     ${rows||empty('alert','Nothing on file','Verbal, first, second and dismissal warnings recorded here stay for 12 months.')}
   </div>`;
 }
@@ -3199,7 +3214,9 @@ function shiftsPage(){
     const onLv=_onLeaveToday(u.id,d2);
     if(onLv)return `<div style="font-size:10px;font-weight:800;color:#B45309;background:#FFFBEB;border-radius:7px;padding:5px 4px;text-align:center">LEAVE</div>`;
     if(sh)return `<div ${canMng?`onclick="App._shEdit('${u.id}','${d2}')" style="cursor:pointer;`:'style="'}font-size:10px;font-weight:800;color:${sh.status==='published'?'#0B7A55':'#92400E'};background:${sh.status==='published'?'#ECFDF5':'#FEF3C7'};border-radius:7px;padding:5px 3px;text-align:center" title="${esc(sh.note||'')}${sh.status==='draft'?' (draft)':''}">${esc(sh.start)}–${esc(sh.end)}</div>`;
-    if(off)return `<div style="font-size:10px;color:var(--c-text-3);text-align:center;padding:5px 0">off</div>`;
+    if(off)return canMng
+      ?`<button onclick="App._shEdit('${u.id}','${d2}')" title="Normally their day off — you can still schedule a shift (e.g. Sunday cover)" style="width:100%;border:1px dashed var(--c-border);background:transparent;border-radius:7px;color:var(--c-text-3);font-size:10px;cursor:pointer;padding:4px 0">off · +</button>`
+      :`<div style="font-size:10px;color:var(--c-text-3);text-align:center;padding:5px 0">off</div>`;
     return canMng?`<button onclick="App._shEdit('${u.id}','${d2}')" style="width:100%;border:1px dashed var(--c-border);background:transparent;border-radius:7px;color:var(--c-text-3);font-size:11px;cursor:pointer;padding:4px 0">+</button>`:'<div style="text-align:center;color:var(--c-text-3);font-size:10px;padding:5px 0">—</div>';
   };
   const draftN=(DB.shifts||[]).filter(s=>s.status==='draft'&&week.includes(s.date)).length;
@@ -10802,8 +10819,7 @@ function _acPeopleTab(){
       <td style="padding:10px 8px">${canMng
         ?`<select onchange="App._acAssignRole('${u.id}',this.value)" class="ui-select" style="width:auto;min-width:150px;font-size:12px;min-height:0;height:32px;padding:4px 26px 4px 10px">${roles.map(r=>`<option value="${r.id}" ${rid===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}${rid&&!DB.roleProfiles[rid]?`<option value="${esc(rid)}" selected>${esc(rid)} (missing)</option>`:''}${!rid?'<option value="" selected>— No role —</option>':''}</select>`
         :`<span style="font-size:12px;font-weight:700;color:var(--c-text-2)">${esc((DB.roleProfiles[rid]||{}).name||'— No role —')}</span>`}</td>
-      <td style="padding:10px 8px">${nOv?`<span style="font-size:11px;font-weight:800;padding:2px 9px;border-radius:20px;background:#FEF3C7;color:#92400E">${nOv} override${nOv===1?'':'s'}</span>`:'<span style="font-size:11px;color:var(--c-text-3)">follows role</span>'}</td>
-      <td style="padding:10px 12px;text-align:right"><button onclick="App._acCustomize('${u.id}')" class="ui-btn ui-btn-ghost ui-btn-sm">${ic('cog','w-3.5 h-3.5')}${canMng?'Customize':'View'}</button></td>
+      <td style="padding:10px 12px;text-align:right"><button onclick="App._acCustomize('${u.id}')" class="ui-btn ui-btn-ghost ui-btn-sm">${ic('cog','w-3.5 h-3.5')}Personal</button></td>
     </tr>`;
   }).join('');
   return `<div class="ui-card" style="padding:0;overflow:hidden">
@@ -10815,9 +10831,8 @@ function _acPeopleTab(){
       <thead><tr style="text-align:left;border-bottom:1px solid var(--c-border)">
         <th style="padding:9px 12px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Person</th>
         <th style="padding:9px 8px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Role (decides their tabs)</th>
-        <th style="padding:9px 8px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Exceptions</th>
         <th></th></tr></thead>
-      <tbody>${rows||`<tr><td colspan="4">${empty('users','No people match','')}</td></tr>`}</tbody>
+      <tbody>${rows||`<tr><td colspan="3">${empty('users','No people match','')}</td></tr>`}</tbody>
     </table></div>
   </div>`;
 }
@@ -10931,7 +10946,7 @@ App._renderACUser=()=>{
   modalShell({title:'Personal settings — '+fullName(u),sub:(role?('Role: '+role.name):'No role assigned')+' · changes apply on Save',size:'max-w-3xl',
     body:`<div>${d.dirty?'<div style="font-size:11.5px;font-weight:800;color:#92400E;background:#FEF3C7;border-radius:9px;padding:7px 11px;margin-bottom:12px">● Unsaved changes — press Save below</div>':''}
       ${personal}${docs}
-      ${Object.keys(d.perms).length?`<div style="font-size:11px;color:var(--c-text-3);background:var(--c-surface-2);border-radius:9px;padding:8px 11px">This person has ${Object.keys(d.perms).length} legacy exception(s) carried over from migration, so some areas ignore their role. <button onclick="_ACD.perms={};_acMark()" style="border:none;background:none;color:var(--c-danger-ink);font-weight:800;cursor:pointer;font-size:11px;padding:0">Clear them</button> so the role decides everything.</div>`:''}
+      ${(()=>{const SYS=['departments','locations','documentsOrg'];const legacy=Object.keys(d.perms).filter(k=>!SYS.includes(k));return legacy.length?`<div style="font-size:11px;color:var(--c-text-3);background:var(--c-surface-2);border-radius:9px;padding:8px 11px">This person has ${legacy.length} legacy exception(s) from migration, so some areas ignore their role. <button onclick="['${'${'}legacy.join(\"','\")}'].forEach(k=>delete _ACD.perms[k]);_acMark()" style="border:none;background:none;color:var(--c-danger-ink);font-weight:800;cursor:pointer;font-size:11px;padding:0">Clear them</button> so the role decides everything. (Document-folder access is managed above and not affected.)</div>`:'';})()}
     </div>`,
     footer:btnG('Cancel','_ACD=null;App.closeModal();rr()')+(canMng?btnP('Save changes','App._acSave()'):'')});
 };
