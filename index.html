@@ -1372,7 +1372,7 @@ const PERM_AREAS=[
   {key:'leaveRequests',label:'Leave — requests',desc:'Applying for and acting on leave',actions:['view','create','approve','download'],scoped:true,group:'Leave & Attendance'},
   {key:'leaveBalances',label:'Leave — balances',desc:"People's leave day balances",actions:['view','edit','grant'],scoped:true,group:'Leave & Attendance'},
   {key:'hrSettings',label:'HR settings',desc:'Leave policy, types, holidays, approval flows',actions:['view','edit'],scoped:false,group:'Leave & Attendance'},
-  {key:'employees',label:'Employees / Users',desc:'The people directory',actions:['view','create','edit','delete','deactivate','assignManager','assignRole','assign','manage'],scoped:true,group:'People & Org'},
+  {key:'employees',label:'Users',desc:'The people directory — create, edit, deactivate people, assign managers',actions:['view','create','edit','delete','deactivate','assignManager','assignRole','assign','manage'],scoped:true,group:'People & Org'},
   {key:'hierarchy',label:'Hierarchy / Org chart',desc:'The reporting tree',actions:['view'],scoped:true,group:'People & Org'},
   {key:'teamview',label:'Team view',desc:'The Team page — live checklist status of the team',actions:['view'],scoped:false,group:'People & Org'},
   {key:'checklists',label:'Checklists',desc:'The checklist system',actions:['view','create','edit','assign','approve'],scoped:true,group:'Tasks & Tickets'},
@@ -2188,7 +2188,7 @@ function okrPage(){
     tree=roots.length?roots.map(o=>_okrNodeHTML(o,0)).join('')
       :empty('chart','No OKRs yet',canCreate?'Create your first L0 objective, assign it to a department and an owner, then add L1 / L2 sub-objectives under it.':'No OKRs have been assigned to you yet. Your manager creates them.');
   }
-  return `<div class="fade">${head}${summary}${duePanel}${fBar}<div>${tree}</div></div>`;
+  return `<div class="fade">${head}${_howBar('okr')}${summary}${duePanel}${fBar}<div>${tree}</div></div>`;
 }
 
 function _okrNodeHTML(o,depth){
@@ -2972,6 +2972,7 @@ function lifecyclePage(){
     </div>`;
   }).join('');
   return `<div class="fade">${hdr('Lifecycle','Onboarding · probation · exit — guided flows with owners & due dates',canMng?[['onboarding','Onboarding'],['probation','Probation'],['exit','Exit']].map(k=>btn('+ '+k[1],`App._flowNew('${k[0]}')`,{variant:k[0]==='onboarding'?'primary':'ghost',size:'sm'})).join(''):'')}
+    ${_howBar('lifecycle')}
     <div class="ui-tabs" style="margin-bottom:14px">${KINDS.map(k=>`<button class="ui-tab${tab===k[0]?' on':''}" onclick="S.filters.lcTab='${k[0]}';rr()">${k[1]}</button>`).join('')}</div>
     ${cards||empty('users','No flows yet',canMng?'Start an onboarding, probation or exit flow — steps and owners come from the templates in HR Config.':'Flows you own steps in will appear here.')}
   </div>`;
@@ -3050,6 +3051,7 @@ function lettersPage(){
     </div>`;
   }).join('');
   return `<div class="fade">${hdr('Letters','Request → approve → issue, from templates',can('letters','create')?btnP('Request letter','App._letterNew()','plus'):'')}
+    ${_howBar('letters')}
     ${rows||empty('doc','No letters yet','Request a salary certificate, NOC, confirmation and more — HR approves and issues.')}
   </div>`;
 }
@@ -3103,6 +3105,7 @@ function disciplinePage(){
     </div>`;
   }).join('');
   return `<div class="fade">${hdr('Discipline','Warnings on file — auto-expire after 12 months',canMng?btnP('Record warning','App._discNew()','plus'):'')}
+    ${_howBar('discipline')}
     ${rows||empty('alert','Nothing on file','Verbal, first, second and dismissal warnings recorded here stay for 12 months.')}
   </div>`;
 }
@@ -3173,6 +3176,7 @@ function overtimePage(){
     </div>`;
   };
   return `<div class="fade">${hdr('Overtime','Log extra hours — weekly review, paid or time-in-lieu',can('overtime','submit')?btnP('Log overtime','App._otNew()','plus'):'')}
+    ${_howBar('overtime')}
     ${pend.length?`<div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">To review (${pend.length})</div>${pend.map(row).join('')}<div style="height:10px"></div>`:''}
     <div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">All entries</div>
     ${mine.map(row).join('')||empty('clock','No overtime yet','Log extra hours worked — your manager approves as payment or time-in-lieu (comp-off).')}
@@ -3200,6 +3204,7 @@ function shiftsPage(){
   };
   const draftN=(DB.shifts||[]).filter(s=>s.status==='draft'&&week.includes(s.date)).length;
   return `<div class="fade">${hdr('Shifts','Weekly roster — publish so colleagues see their shifts',canMng&&draftN?btn('Publish week ('+draftN+')','App._shPublish(\''+week[0]+'\',\''+week[6]+'\')',{variant:'primary',icon:'check'}):'')}
+    ${_howBar('shifts')}
     ${offToday.length?`<div class="ui-card" style="padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-size:11.5px;font-weight:800;color:var(--c-text-2)">Off / on leave today:</span>${offToday.slice(0,10).map(u=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--c-text-2)">${avatar(u,'w-5 h-5','text-[8px]')}${esc(fullName(u))}</span>`).join('')}</div>`:''}
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
       <button onclick="S.filters.shWk--;rr()" class="ui-btn ui-btn-ghost ui-btn-sm">‹ Prev</button>
@@ -3327,6 +3332,7 @@ function payrollPage(){
     else if(run.status==='Finalized'&&can('payroll','rollback'))actions+=btn('Roll back (admin)','App._payRollback()',{variant:'danger',size:'sm'});
   }
   return `<div class="fade">${hdr('Payroll','Verify attendance → run → approve → finalize · payslips & WPS export','')}
+    ${_howBar('payroll')}
     <div class="ui-card" style="padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <input type="month" value="${month}" onchange="S.filters.pyMonth=this.value;rr()" class="ui-input" style="width:auto"/>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${steps}</div>
@@ -3578,6 +3584,34 @@ function _setupGuideWidget(){
         <span style="font-size:12px;font-weight:${ok?'600':'700'};color:var(--c-text);${ok?'text-decoration:line-through':''}">${l}</span>
       </button>`).join('')}
     </div>
+  </div>`;
+}
+/* ── "HOW THIS WORKS" bars — every complex page explains itself in one sentence,
+      with chips linking to the tabs it feeds / reads from. ── */
+const HOW={
+  shifts:{t:'Plan the week as drafts → press Publish → each colleague is notified and sees only their own shifts. People on approved leave show as LEAVE automatically.',l:[['leave','Leave'],['attendance','Attendance']]},
+  overtime:{t:'You log extra hours → your manager approves. “Pay” lands in this month\'s payroll at the multiplier; “Time-in-lieu” becomes comp-off leave balance instead.',l:[['payroll','Payroll'],['leave','Leave'],['approvals','Approvals']]},
+  letters:{t:'Anyone requests a letter → HR edits & approves → Issue makes it print-ready. Name, position, salary and joining date auto-fill from the person\'s profile.',l:[['users','Users'],['lifecycle','Lifecycle']]},
+  lifecycle:{t:'Start a flow for a person → each step gets a real owner and a due date → owners tick them off and get reminded. The exit flow can suspend payroll automatically.',l:[['letters','Letters'],['payroll','Payroll'],['users','Users']]},
+  discipline:{t:'Record a warning → the person and their manager are notified → it stays on file and expires by itself after 12 months.',l:[['users','Users'],['audit','Audit']]},
+  payroll:{t:'Reads the month automatically: clock-ins = paid days, unpaid leave & unexplained absence = deducted, approved overtime = added. You just verify → HoP approves → Finalize creates payslips + the bank file. Salaries are set on each user\'s profile.',l:[['attendance','Attendance'],['leave','Leave'],['overtime','Overtime'],['users','Users']]},
+  accesscontrol:{t:'Two steps run everything: 1) a ROLE is a bundle of switches (which tabs, which buttons) — 2) give each person ONE role. That\'s all you normally need; per-person overrides are optional, under Advanced.',l:[['users','Users'],['audit','Audit']]},
+  hrmconfig:{t:'Company-wide policy in one place: leave rules & holidays, alert thresholds (late, SLA, expiries), overtime caps, payroll cut-off, and the step templates for onboarding / probation / exit. Changes apply to everyone instantly.',l:[['payroll','Payroll'],['lifecycle','Lifecycle'],['leave','Leave']]},
+  okr:{t:'Create an objective with a target and a check-in day → the owner gets it as a task on that day → their numbers roll up the tree (L2 → L1 → L0) and the graph shows planned pace vs reality.',l:[['mychecklists','My Checklists'],['dashboard','Dashboard']]},
+};
+function _howBar(key){
+  const h=HOW[key];if(!h)return'';
+  try{if(localStorage.getItem('bridge_how_'+key))return'';}catch(e){}
+  return `<div style="display:flex;gap:10px;align-items:flex-start;background:var(--c-info-soft);border:1px solid #BFDBFE;border-radius:12px;padding:10px 14px;margin-bottom:14px">
+    <span style="flex-shrink:0;margin-top:1px">${ic('help','w-4 h-4')}</span>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:12.5px;color:#1E40AF;line-height:1.55">${h.t}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center">
+        <span style="font-size:10px;font-weight:800;color:#1E40AF;text-transform:uppercase;letter-spacing:.05em">Linked:</span>
+        ${h.l.filter(x=>navFor().some(n=>n[0]===x[0])).map(x=>`<button onclick="App.go('${x[0]}')" style="font-size:11px;font-weight:700;padding:2px 10px;border-radius:20px;border:1px solid #BFDBFE;background:var(--c-surface);color:#1E40AF;cursor:pointer">${x[1]} →</button>`).join('')}
+      </div>
+    </div>
+    <button onclick="try{localStorage.setItem('bridge_how_${key}','1')}catch(e){};rr()" title="Got it — hide" style="border:none;background:transparent;color:#1E40AF;cursor:pointer;font-size:14px;line-height:1;flex-shrink:0">×</button>
   </div>`;
 }
 /* ===== LOGIN ===== */
@@ -10513,7 +10547,7 @@ function hrmConfigPage(){
     const logs=(DB.hrmAudit||[]).slice(0,80);
     body=`<div style="background:#fff;border-radius:14px;border:1px solid #ECEDF0;overflow:hidden">${logs.length?logs.map(l=>`<div style="display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid #F3F4F6"><div style="flex:1"><div style="font-size:13px;font-weight:600">${esc(l.action)}</div><div style="font-size:12px;color:#9CA3AF">${esc(l.target)}</div></div><div style="font-size:11px;color:#9CA3AF;white-space:nowrap">${esc(l.actor)} · ${new Date(l.time).toLocaleString('en-GB')}</div></div>`).join(''):empty('audit','No HRM activity','')}</div>`;
   }
-  return `<div class="fade">${hdr('HR Config','Leave policy, timing, approval flows & holidays')}
+  return `<div class="fade">${hdr('HR Config','Leave policy, timing, approval flows & holidays')}${_howBar('hrmconfig')}
     <div style="margin-bottom:16px">${chipBar(TABS,tab,'App._setCfgTab')}</div>
     ${body}</div>`;
 }
@@ -10749,7 +10783,7 @@ function accessControlPage(){
     <button class="ui-tab${tab==='people'?' on':''}" onclick="S.filters.acTab='people';rr()">People <span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:99px;background:var(--c-surface-2);color:var(--c-text-2);margin-left:5px">${DB.users.filter(u=>u.status==='Active').length}</span></button>
     <button class="ui-tab${tab==='roles'?' on':''}" onclick="S.filters.acTab='roles';rr()">Roles <span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:99px;background:var(--c-surface-2);color:var(--c-text-2);margin-left:5px">${Object.keys(DB.roleProfiles||{}).length}</span></button>
   </div>`;
-  return `<div class="fade">${hdr('Access Control','Create roles → assign to people. Overrides handle the exceptions.')}${tabs}${tab==='roles'?_acRolesTab():_acPeopleTab()}</div>`;
+  return `<div class="fade">${hdr('Access Control','Create roles → assign to people. Overrides handle the exceptions.')}${tabs}${_howBar('accesscontrol')}${tab==='roles'?_acRolesTab():_acPeopleTab()}</div>`;
 }
 /* ─────────────── PEOPLE TAB ─────────────── */
 function _acPeopleTab(){
@@ -10897,8 +10931,10 @@ App._renderACUser=()=>{
   modalShell({title:'Access — '+fullName(u),sub:(role?('Role: '+role.name):'No role assigned')+' · changes apply on Save',size:'max-w-3xl',
     body:`<div>${d.dirty?'<div style="font-size:11.5px;font-weight:800;color:#92400E;background:#FEF3C7;border-radius:9px;padding:7px 11px;margin-bottom:12px">● Unsaved changes — press Save below</div>':''}
       ${personal}${docs}
-      <div style="${lab};margin:2px 0 8px">Per-area overrides <span style="text-transform:none;font-weight:600">(beat the role — even for a Super Admin)</span></div>
-      ${ovCards}
+      <button onclick="_ACD.showOv=!_ACD.showOv;App._renderACUser()" style="display:inline-flex;align-items:center;gap:7px;border:1px dashed var(--c-border);background:var(--c-surface-2);border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700;color:var(--c-text-2);cursor:pointer;margin-bottom:10px">
+        ${ic('cog','w-3.5 h-3.5')}Advanced — per-area overrides ${Object.keys(d.perms).length?`<span style="font-size:10px;font-weight:800;background:#FEF3C7;color:#92400E;border-radius:10px;padding:1px 7px">${Object.keys(d.perms).length} active</span>`:'(rarely needed)'} <span style="font-size:9px">${d.showOv?'▲':'▼'}</span>
+      </button>
+      ${d.showOv?`<div style="font-size:11px;color:var(--c-text-3);margin-bottom:8px">An override makes ONE area ignore the role for THIS person only. If you're not sure, you don't need it — change the role instead.</div>${ovCards}`:''}
     </div>`,
     footer:btnG('Cancel','_ACD=null;App.closeModal();rr()')+(canMng?btnP('Save changes','App._acSave()'):'')});
 };
@@ -11010,7 +11046,7 @@ App._renderRPEdit=()=>{
     const rowsH=groups[g].map(a=>{
       const cur=p.perms[a.key]||{scope:'none',actions:{}};
       const nOn=a.actions.filter(x=>(cur.actions||{})[x]).length;
-      return `<div style="display:grid;grid-template-columns:minmax(140px,200px) 1fr;gap:4px 12px;padding:8px 0;border-top:1px solid var(--c-border);align-items:center">
+      return `<div data-rp-row="${esc((a.label+' '+a.desc+' '+a.actions.map(x=>PERM_ACTION_LABEL[x]||x).join(' ')).toLowerCase())}" style="display:grid;grid-template-columns:minmax(140px,200px) 1fr;gap:4px 12px;padding:8px 0;border-top:1px solid var(--c-border);align-items:center">
         <div><div style="font-size:12px;font-weight:700;color:var(--c-text)">${esc(a.label)} ${nOn?`<span style="font-size:9px;font-weight:800;color:#0B7A55">${nOn} on</span>`:''}</div><div style="font-size:10px;color:var(--c-text-3);line-height:1.3">${esc(a.desc)}</div></div>
         <div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center">
           ${a.actions.map(act=>_acTogBtn(!!(cur.actions||{})[act],PERM_ACTION_LABEL[act]||act,`App._rpT('${a.key}','${act}')`,dis)).join('')}
@@ -11027,6 +11063,7 @@ App._renderRPEdit=()=>{
         <div><label style="${lab}">Role name *</label><input ${dis?'disabled':''} type="text" value="${esc(p.name||'')}" oninput="_RPD.name=this.value;_RPD.dirty=true" placeholder="e.g. Branch Supervisor" class="ui-input rf" style="margin-top:5px"/></div>
         <div><label style="${lab}">Description</label><input ${dis?'disabled':''} type="text" value="${esc(p.description||'')}" oninput="_RPD.description=this.value;_RPD.dirty=true" placeholder="What is this role for?" class="ui-input rf" style="margin-top:5px"/></div>
       </div>
+      <input placeholder="Find a permission… e.g. create user, payroll, tickets" class="ui-input rf" style="margin-bottom:10px" oninput="const q=this.value.toLowerCase();document.querySelectorAll('[data-rp-row]').forEach(r=>{r.style.display=!q||r.getAttribute('data-rp-row').includes(q)?'grid':'none'});"/>
       ${grid}
     </div>`,
     footer:btnG('Cancel','_RPD=null;App.closeModal()')+(canMng?btnP(p.isNew?'Create role':'Save role','App._rpSave()'):'')});
