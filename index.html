@@ -906,7 +906,7 @@ async function loadFromSB(){
       DB.okrLogs=_mOKRLog(data);saveDB();rr();
     }).catch(e=>console.warn('[OKR] logs fetch failed:',e.message));
   // ── HRM plan tables (same defensive targeted-load pattern) ──
-  [['flows','flows',_mFlow],['letters','letters',_mLetter],['discipline','discipline',_mDisc],['overtime','overtime',_mOT],['payroll_runs','payrollRuns',_mPRun],['payroll_items','payrollItems',_mPItem]].forEach(([tbl,key,map])=>{
+  [['flows','flows',_mFlow],['letters','letters',_mLetter],['discipline','discipline',_mDisc],['overtime','overtime',_mOT],['payroll_runs','payrollRuns',_mPRun],['payroll_items','payrollItems',_mPItem],['surveys','surveys',_mSv],['survey_answers','surveyAnswers',_mSvA]].forEach(([tbl,key,map])=>{
     sb.from(tbl).select('*').then(({data,error})=>{
       if(error){console.warn('['+tbl+'] load skipped:',error.message);return;}
       DB[key]=map(data);saveDB();rr();
@@ -1149,7 +1149,7 @@ let DB={
   //    updates (value + comment + photos), okrLogs = per-OKR activity trail (every edit is logged).
   okrs:[],okrCheckins:[],okrLogs:[],
   // ── HRM build plan (targeted writes, like OKRs) ──
-  flows:[],letters:[],discipline:[],overtime:[],payrollRuns:[],payrollItems:[],
+  flows:[],letters:[],discipline:[],overtime:[],payrollRuns:[],payrollItems:[],surveys:[],surveyAnswers:[],
   // ── HRM (Attendance & Leave) — FRONTEND-ONLY, never added to _sync()/loadFromSB() table lists ──
   hrmConfig:{},     // company/country policy profiles
   attendance:[],    // attendance day records (one per user per date)
@@ -1238,7 +1238,7 @@ function loadDB(){
     const r=localStorage.getItem(LS_KEY);
     if(!r)return false;
     const p=JSON.parse(r);if(!p.DB)return false;DB=p.DB;
-    ['users','departments','locations','checklists','submissions','approvals','feedback','folders','documents','audit','notifications','questions','checklists_deleted','questions_deleted','folders_deleted','documents_deleted','users_deleted','departments_deleted','locations_deleted','attendance','leaveTypes','leaveRequests','leaveBalances','holidays','hrmAudit','announcements','shifts','okrs','okrCheckins','okrLogs','flows','letters','discipline','overtime','payrollRuns','payrollItems'].forEach(k=>{if(!DB[k])DB[k]=[];});
+    ['users','departments','locations','checklists','submissions','approvals','feedback','folders','documents','audit','notifications','questions','checklists_deleted','questions_deleted','folders_deleted','documents_deleted','users_deleted','departments_deleted','locations_deleted','attendance','leaveTypes','leaveRequests','leaveBalances','holidays','hrmAudit','announcements','shifts','okrs','okrCheckins','okrLogs','flows','letters','discipline','overtime','payrollRuns','payrollItems','surveys','surveyAnswers'].forEach(k=>{if(!DB[k])DB[k]=[];});
     // OKR v2 migration: drop the retired question-linked OKR model from stale localStorage.
     // Old rows are recognisable by having no metricType (they carried questionId/rollup instead).
     DB.okrs=(DB.okrs||[]).filter(o=>o&&o.metricType);
@@ -1382,7 +1382,7 @@ const PERM_AREAS=[
   {key:'documentsOrg',label:'Documents (organization)',desc:'Shared dept/location files',actions:['view','create','delete','download','approve'],scoped:true,group:'Content'},
   {key:'documentsPersonal',label:'Personal documents',desc:'Files on a person\'s profile',actions:['view','create','delete','download'],scoped:true,group:'Content'},
   {key:'analytics',label:'Analytics',desc:'Operational analytics dashboard (checklists, compliance, tickets)',actions:['view'],scoped:false,group:'Insights'},
-  {key:'reports',label:'HRM Analytics',desc:'HR analytics dashboard & CSV exports',actions:['view','download'],scoped:false,group:'Insights'},
+  {key:'reports',label:'HRM Analytics',desc:'HR analytics dashboard & CSV exports',actions:['view','download'],scoped:true,group:'Insights'},
   {key:'okr',label:'OKRs',desc:'Hierarchical objectives (L0 → L1 → L2) with owners, targets & scheduled check-ins',actions:['view','create','edit','manage'],scoped:false,group:'Insights'},
   {key:'announcements',label:'Announcements',desc:'Company-wide messages',actions:['view','create'],scoped:false,group:'Content'},
   {key:'locations',label:'Locations',desc:'Offices and GPS boundary',actions:['view','create','edit','manage'],scoped:false,group:'System'},
@@ -1394,6 +1394,7 @@ const PERM_AREAS=[
   {key:'discipline',label:'Discipline',desc:'Warnings on file (12-month retention)',actions:['view','manage'],scoped:true,group:'People & Org'},
   {key:'letters',label:'Letters',desc:'Request, approve & issue HR letters from templates',actions:['view','create','approve','issue'],scoped:true,group:'Content'},
   {key:'payroll',label:'Payroll',desc:'Runs, verification, payslips, WPS export',actions:['view','verify','run','approve','finalize','rollback','download'],scoped:false,group:'Payroll'},
+  {key:'surveys',label:'Surveys',desc:'Pulse & performance surveys — answer and (HR) manage',actions:['view','submit','manage'],scoped:false,group:'People & Org'},
   {key:'audit',label:'Audit / Activity log',desc:'History of actions',actions:['view'],scoped:false,group:'System'},
   {key:'settings',label:'Settings',desc:'App settings',actions:['view','edit'],scoped:false,group:'System'},
   {key:'accessControl',label:'Access Control',desc:'The role-profile system itself',actions:['view','manage'],scoped:false,group:'System'},
@@ -1427,7 +1428,7 @@ function _seedRoleProfiles(){
       questions:A('none','view','manage'),
       tickets:A('team','view','create','manage'),
       documentsPersonal:A('self','view','create','download'),
-      reports:A('none','view'),
+      reports:A('team','view'),
       announcements:A('none','view'),
       approvals:A('none','view'),
       okr:A('none','view','create','edit','manage'),
@@ -1437,6 +1438,7 @@ function _seedRoleProfiles(){
       lifecycle:A('team','view'),
       discipline:A('team','view'),
       letters:A('self','view','create'),
+      surveys:A('none','view','submit'),
     }},
     hr:{id:'hr',name:'HR',description:'The HR modules: attendance, leave & balances, HR settings, HRM analytics, document approvals.',builtin:true,perms:{
       dashboard:A('none','view'),
@@ -1450,7 +1452,7 @@ function _seedRoleProfiles(){
       tickets:A('self','view','create'),
       documentsOrg:A('everyone','view','approve'),
       documentsPersonal:A('self','view','create','download'),
-      reports:A('none','view','download'),
+      reports:A('everyone','view','download'),
       announcements:A('none','view','create'),
       approvals:A('none','view'),
       okr:A('none','view'),
@@ -1460,6 +1462,7 @@ function _seedRoleProfiles(){
       discipline:A('everyone','view','manage'),
       letters:A('everyone','view','create','approve','issue'),
       payroll:{scope:'none',actions:{view:true,verify:true,run:true,download:true}},
+      surveys:A('none','view','submit','manage'),
     }},
     basic:{id:'basic',name:'Basic Employee',description:'A standard employee — their own checklists, attendance, leave and tickets.',builtin:true,perms:{
       dashboard:A('none','view'),
@@ -1475,9 +1478,10 @@ function _seedRoleProfiles(){
       scheduling:A('self','view'),
       overtime:A('self','view','submit'),
       letters:A('self','view','create'),
+      surveys:A('none','view','submit'),
     }},
   };
-  const V='4'; // v4: HRM plan areas (shifts, overtime, lifecycle, discipline, letters, payroll)
+  const V='5'; // v5: reports scoped (HRM analytics shows team/everyone), surveys
   Object.values(presets).forEach(p=>{
     const cur=DB.roleProfiles[p.id];
     if(!cur||(cur.builtin&&cur._v!==V)){p._v=V;DB.roleProfiles[p.id]=p;} // upgrade built-ins once; never touch custom roles
@@ -1655,7 +1659,7 @@ const avatar=(u,sz='w-9 h-9',tx='text-xs')=>{if(!u)return'<div class="'+sz+' bg-
 /* ═══════════════ SHARED UI — token-driven design system ═══════════════
    ONE button helper btn() with variants; btnP/btnG kept as thin aliases so every
    existing call site (and the tests) keep working. New code can call btn() directly. */
-const hdr=(t,s,a='')=>`<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:22px;flex-wrap:wrap"><div style="min-width:0"><h1 class="fd" style="font-size:var(--fs-h1);font-weight:800;letter-spacing:-.6px;line-height:1.15;color:var(--c-text)">${esc(t)}</h1>${s?`<p style="font-size:14px;color:var(--c-text-2);margin-top:4px">${esc(s)}</p>`:''}</div><div style="display:flex;gap:8px;flex-wrap:wrap">${a}</div></div>`;
+const hdr=(t,s,a='')=>`<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:22px;flex-wrap:wrap"><div style="min-width:0"><h1 class="fd" style="font-size:var(--fs-h1);font-weight:800;letter-spacing:-.6px;line-height:1.15;color:var(--c-text)">${esc(t)}</h1>${s?`<p style="font-size:14px;color:var(--c-text-2);margin-top:4px">${esc(s)}</p>`:''}</div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">${a}${(typeof HOW!=='undefined'&&S.uid&&HOW[S.route])?`<button onclick="App._howModal()" title="How this entire tab works" aria-label="How this tab works" style="width:34px;height:34px;flex-shrink:0;border-radius:10px;border:1px solid var(--c-border);background:var(--c-surface);color:var(--c-text-2);cursor:pointer;display:grid;place-items:center;font-size:15px;font-weight:800">?</button>`:''}</div></div>`;
 const pageHeader=hdr;
 function btn(label,onclick,opts={}){
   const v=opts.variant||'primary',sz=opts.size||'md',i=opts.icon||'';
@@ -1818,20 +1822,21 @@ const NAV_ALL=[
   ['leave','approve','Leave',()=>can('leaveRequests','view')],
   ['tickets','ticket','Tickets',()=>can('tickets','view')],
   ['announcements','msg','Announcements',()=>can('announcements','view')],
-  ['teamview','users','Team',()=>can('teamview','view')],
+  ['teamview','users','Team',()=>can('teamview','view')||can('allChecklists','view')],
   ['users','users','Users',()=>can('employees','view')],
   ['hierarchy','tree','Hierarchy',()=>can('hierarchy','view')],
   ['checklists','list','Create Checklist',()=>can('checklists','create')],
-  ['allcl','list','All Checklists',()=>can('allChecklists','view')],
+
   ['questions','help','Questions',()=>can('questions','view')],
-  ['approvals','approve','Approvals',()=>can('approvals','view')],
+  ['approvals','approve','Inbox — Approvals',()=>can('approvals','view')],
   ['overtime','clock','Overtime',()=>can('overtime','view')],
   ['shifts','clock','Shifts',()=>can('scheduling','view')],
   ['lifecycle','users','Lifecycle',()=>can('lifecycle','view')],
   ['letters','doc','Letters',()=>can('letters','view')],
+  ['surveys','msg','Surveys',()=>can('surveys','view')],
   ['discipline','alert','Discipline',()=>can('discipline','view')],
   ['payroll','chart','Payroll',()=>can('payroll','view')],
-  ['notifications','bell','Notifications',()=>true],
+  ['notifications','bell','Inbox — Alerts',()=>true],
   ['okr','chart','OKRs',()=>can('okr','view')],
   ['hrmanalytics','chart','HRM Analytics',()=>can('reports','view')],
   ['hrmconfig','cog','HR Config',()=>can('hrSettings','view')],
@@ -1852,7 +1857,7 @@ const NAV_SECTION_OF={
   // My time — everything about hours, presence and time off
   attendance:'Time',leave:'Time',overtime:'Time',shifts:'Time',
   // Work — tasks and content
-  checklists:'Work',allcl:'Work',questions:'Work',tickets:'Work',letters:'Work',announcements:'Work',
+  checklists:'Work',allcl:'Work',questions:'Work',tickets:'Work',letters:'Work',announcements:'Work',surveys:'Work',
   // People
   users:'People',teamview:'People',hierarchy:'People',lifecycle:'People',discipline:'People',
   // Insights
@@ -2084,7 +2089,7 @@ function pageContent(){
   if(r==='questions'){if(can('questions','view'))return questionsPage();return myClsPage();}
   if(r==='mychecklists')return myClsPage();
   if(r==='teamview'){if(can('teamview','view'))return teamViewPage();S.route='mychecklists';return myClsPage();}
-  if(r==='allcl'){if(can('allChecklists','view'))return allClsPage();return myClsPage();}
+  if(r==='allcl'){if(can('allChecklists','view'))return allClsPage();S.route='teamview';return pageContent();}
   if(r==='profile')return profilePage();
   if(r==='attendance')return attendancePage();
   if(r==='leave')return leavePage();
@@ -2104,6 +2109,7 @@ function pageContent(){
   if(r==='letters'){if(can('letters','view'))return lettersPage();S.route='mychecklists';return myClsPage();}
   if(r==='discipline'){if(can('discipline','view'))return disciplinePage();S.route='mychecklists';return myClsPage();}
   if(r==='payroll'){if(can('payroll','view'))return payrollPage();S.route='mychecklists';return myClsPage();}
+  if(r==='surveys'){if(can('surveys','view'))return surveysPage();S.route='mychecklists';return myClsPage();}
   if(r==='okr'){if(can('okr','view'))return okrPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   return empty('grid','Not found','');
 }
@@ -2883,22 +2889,29 @@ function _runEventTriggers(){
         }
       });
     }
+    // 6) surveys whose run date has arrived — tell each person what they owe
+    (DB.surveys||[]).filter(sv=>sv.status==='Active'&&sv.runDate===d).forEach(sv=>{
+      act.forEach(u=>{const t=_svTargetsFor(sv,u.id);if(t.length)_notifyOnce(u.id,'📝 Survey open: "'+sv.title+'" — '+t.length+' form'+(t.length===1?'':'s')+' to fill','survey','surveys');});
+    });
     localStorage.setItem(stampKey,'1');
     saveDB();
   }catch(e){console.warn('[triggers]',e.message);}
 }
 
 /* ── LIFECYCLE FLOWS: onboarding / probation / exit — one engine, three templates ── */
-function _flowStart(kind,userId){
+function _flowStart(kind,userId,ownerPicks){
   const u=uById(userId);if(!u)return null;
   const tpl=((DB.hrmConfig||{}).flowTemplates||{})[kind]||[];
   const hrs=_hrUsers();const m=_mgrOf(u);
   const today=new Date(todayISO()+'T00:00:00');
-  const steps=tpl.map(t=>{
-    let ownerId=null;
-    if(t.ownerType==='manager')ownerId=m?m.id:(hrs[0]||{}).id||null;
-    else if(t.ownerType==='hr')ownerId=(hrs[0]||{}).id||null;
-    else if(t.ownerType==='dept'){const du=DB.users.find(x=>x.status==='Active'&&x.department===t.dept);ownerId=du?du.id:(hrs[0]||{}).id||null;}
+  const steps=tpl.map((t,i)=>{
+    let ownerId=(ownerPicks&&ownerPicks[i])||null;
+    if(!ownerId){
+      if(t.ownerType==='manager')ownerId=m?m.id:(hrs[0]||{}).id||null;
+      else if(t.ownerType==='hr')ownerId=(hrs[0]||{}).id||null;
+      else if(t.ownerType==='dept'){const du=DB.users.find(x=>x.status==='Active'&&x.department===t.dept);ownerId=du?du.id:(hrs[0]||{}).id||null;}
+    }
+    if(t.ownerType==='manager')ownerId=m?m.id:ownerId;
     const due=new Date(today);due.setDate(due.getDate()+(Number(t.offsetDays)||0));
     return{id:uid('fs'),title:t.title,ownerType:t.ownerType,dept:t.dept||'',ownerId,type:t.type||'task',dueDate:due.toISOString().slice(0,10),done:false,doneBy:null,doneAt:null,formText:'',note:''};
   });
@@ -2910,14 +2923,29 @@ function _flowStart(kind,userId){
 }
 App._flowNew=(kind)=>{
   if(!can('lifecycle','manage'))return toast('You need Lifecycle → Manage','err');
+  _seedHRMPlan();
   const users=DB.users.filter(u=>u.status==='Active');
-  modalShell({title:'Start '+kind+' flow',size:'max-w-sm',
+  const tpl=((DB.hrmConfig||{}).flowTemplates||{})[kind]||[];
+  const hrUsers=users.filter(u=>u.hrm?.isHR===true||u.hrm?.roleProfileId==='hr');
+  const stepSel=(t,i)=>{
+    if(t.ownerType==='manager')return `<span style="font-size:11px;color:var(--c-text-3)">their manager (automatic)</span>`;
+    const pool=t.ownerType==='hr'?(hrUsers.length?hrUsers:users):users.filter(u=>u.department===t.dept);
+    return `<select id="fs-own-${i}" class="ui-select rf" style="min-height:0;height:30px;font-size:11.5px;padding:3px 22px 3px 8px">${(pool.length?pool:users).map(u=>`<option value="${u.id}">${esc(fullName(u))}</option>`).join('')}</select>`;
+  };
+  modalShell({title:'Start '+kind+' flow',size:'max-w-md',
     body:`<div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Colleague</label>
-      <select id="flw-user" class="ui-select rf">${users.map(u=>`<option value="${u.id}">${esc(fullName(u))}</option>`).join('')}</select>
-      <p style="font-size:11.5px;color:var(--c-text-3);margin-top:10px">Steps come from the ${kind} template (HR Config → Flow templates). Owners are notified with due dates.</p></div>`,
+      <select id="flw-user" class="ui-select rf" style="margin-bottom:12px">${users.map(u=>`<option value="${u.id}">${esc(fullName(u))}</option>`).join('')}</select>
+      <label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Steps & owners</label>
+      ${tpl.map((t,i)=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px dashed var(--c-border)"><span style="flex:1;min-width:0;font-size:12px;font-weight:600;color:var(--c-text)">${esc(t.title)}</span>${stepSel(t,i)}</div>`).join('')}
+      <p style="font-size:11px;color:var(--c-text-3);margin-top:10px">HR steps offer HR-role people; department steps offer that department's people. Everyone picked is notified with a due date.</p></div>`,
     footer:btnG('Cancel','App.closeModal()')+btnP('Start flow',`App._flowStartGo('${kind}')`)});
 };
-App._flowStartGo=(kind)=>{const el=document.getElementById('flw-user');if(!el)return;_flowStart(kind,el.value);closeModal();toast('Flow started');rr();};
+App._flowStartGo=(kind)=>{
+  const el=document.getElementById('flw-user');if(!el)return;
+  const tpl=((DB.hrmConfig||{}).flowTemplates||{})[kind]||[];
+  const owners=tpl.map((t,i)=>{const s2=document.getElementById('fs-own-'+i);return s2?s2.value:null;});
+  _flowStart(kind,el.value,owners);closeModal();toast('Flow started');rr();
+};
 App._flowStep=(fid,sid)=>{
   const f=(DB.flows||[]).find(x=>x.id===fid);if(!f)return;
   const st=f.steps.find(x=>x.id===sid);if(!st)return;
@@ -3020,13 +3048,20 @@ App._letterIssue=(id)=>{
   log(fullName(me()),'Letter issued',l.title);
   saveDB();rr();App._letterPrint(id);
 };
+App._letterSoftDel=(id)=>{
+  const l=(DB.letters||[]).find(x=>x.id===id);if(!l)return;
+  if(!confirm('Remove this rejected letter from the list? It stays in the database and the deletion is logged.'))return;
+  l.status='Deleted';_pushRow('letters',_letterRow(l),'letter');
+  log(fullName(me()),'Deleted rejected letter',l.title+' · '+(uById(l.userId)?fullName(uById(l.userId)):''));
+  saveDB();toast('Removed (kept in database + audit)','warn');rr();
+};
 App._letterPrint=(id)=>{const l=(DB.letters||[]).find(x=>x.id===id);if(!l)return;_printHTML(l.title,'<div>'+esc(l.body).replace(/\n/g,'<br>')+'</div>');};
 App._letterEdit=(id,val)=>{const l=(DB.letters||[]).find(x=>x.id===id);if(!l)return;l.body=val;clearTimeout(App._ltT);App._ltT=setTimeout(()=>{_pushRow('letters',_letterRow(l),'letter');saveDB();},1200);};
 function lettersPage(){
   _seedHRMPlan();
   const canAppr=can('letters','approve'),canIssue=can('letters','issue');
   const f=scopeFilter('letters');
-  const mine=(DB.letters||[]).filter(l=>canAppr||l.userId===S.uid||l.requestedBy===S.uid||f(l.userId)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const mine=(DB.letters||[]).filter(l=>l.status!=='Deleted'&&(canAppr||l.userId===S.uid||l.requestedBy===S.uid||f(l.userId))).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
   const stChip=s=>({Requested:['#FFFBEB','#B45309'],Approved:['#ECFDF5','#047857'],Issued:['#EFF6FF','#1D4ED8'],Rejected:['#FFF1F2','#9F1239']}[s]||['#F6F7F8','#6B7280']);
   const rows=mine.map(l=>{
     const u=uById(l.userId);const [bg,fg]=stChip(l.status);
@@ -3046,6 +3081,7 @@ function lettersPage(){
           ${l.status==='Requested'&&canAppr?btn('Approve',`App._letterDecide('${l.id}','approve')`,{variant:'primary',size:'sm',icon:'check'})+btn('Reject',`App._letterDecide('${l.id}','reject')`,{variant:'danger',size:'sm'}):''}
           ${l.status==='Approved'&&canIssue?btn('Issue & print',`App._letterIssue('${l.id}')`,{variant:'primary',size:'sm',icon:'doc'}):''}
           ${l.status==='Issued'?btn('Print / PDF',`App._letterPrint('${l.id}')`,{variant:'ghost',size:'sm'}):''}
+          ${l.status==='Rejected'&&canAppr?btn('Delete',`App._letterSoftDel('${l.id}')`,{variant:'danger',size:'sm',icon:'trash'}):''}
         </div>
       </div>`:''}
     </div>`;
@@ -3152,6 +3188,13 @@ App._otSave=()=>{
   log(fullName(me()),'Overtime submitted',hours+'h '+date);
   saveDB();closeModal();toast('Overtime submitted');rr();
 };
+App._otSoftDel=(id)=>{
+  const o=(DB.overtime||[]).find(x=>x.id===id);if(!o)return;
+  if(!confirm('Remove this rejected entry from the list? It stays in the database and the deletion is logged.'))return;
+  o.status='Deleted';_pushRow('overtime',_otRow(o),'overtime');
+  log(fullName(me()),'Deleted rejected overtime',o.hours+'h · '+(uById(o.userId)?fullName(uById(o.userId)):''));
+  saveDB();toast('Removed (kept in database + audit)','warn');rr();
+};
 App._otDecide=(id,action,comp)=>{
   if(!can('overtime','approve'))return toast('You need Overtime → Approve','err');
   const o=(DB.overtime||[]).find(x=>x.id===id);if(!o)return;
@@ -3171,7 +3214,7 @@ App._otDecide=(id,action,comp)=>{
 function overtimePage(){
   const canAppr=can('overtime','approve');
   const f=scopeFilter('overtime');
-  const mine=(DB.overtime||[]).filter(o=>o.userId===S.uid||canAppr&&f(o.userId)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const mine=(DB.overtime||[]).filter(o=>o.status!=='Deleted'&&(o.userId===S.uid||canAppr&&f(o.userId))).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
   const pend=mine.filter(o=>o.status==='Pending'&&o.userId!==S.uid);
   const stC={Pending:['#FFFBEB','#B45309'],Approved:['#ECFDF5','#047857'],Rejected:['#FFF1F2','#9F1239']};
   const row=o=>{
@@ -3183,6 +3226,7 @@ function overtimePage(){
         <div style="font-size:11.5px;color:var(--c-text-2)">${esc(o.reason)}${o.comp?' · '+(o.comp==='lieu'?'time-in-lieu':'payment'):''}</div>
       </div>
       <span style="font-size:10.5px;font-weight:800;padding:3px 10px;border-radius:20px;background:${bg};color:${fg}">${o.status}</span>
+      ${o.status==='Rejected'&&canAppr?`<button onclick="App._otSoftDel('${o.id}')" title="Remove from list (kept in database + audit)" style="width:26px;height:26px;display:grid;place-items:center;border:none;background:transparent;color:var(--c-text-3);cursor:pointer">${ic('trash','w-3.5 h-3.5')}</button>`:''}
       ${o.status==='Pending'&&canAppr&&o.userId!==S.uid?`<div style="display:flex;gap:6px">
         ${btn('Pay',`App._otDecide('${o.id}','approve','pay')`,{variant:'primary',size:'sm'})}
         ${btn('Time-in-lieu',`App._otDecide('${o.id}','approve','lieu')`,{variant:'ghost',size:'sm'})}
@@ -3215,12 +3259,12 @@ function shiftsPage(){
     if(onLv)return `<div style="font-size:10px;font-weight:800;color:#B45309;background:#FFFBEB;border-radius:7px;padding:5px 4px;text-align:center">LEAVE</div>`;
     if(sh)return `<div ${canMng?`onclick="App._shEdit('${u.id}','${d2}')" style="cursor:pointer;`:'style="'}font-size:10px;font-weight:800;color:${sh.status==='published'?'#0B7A55':'#92400E'};background:${sh.status==='published'?'#ECFDF5':'#FEF3C7'};border-radius:7px;padding:5px 3px;text-align:center" title="${esc(sh.note||'')}${sh.status==='draft'?' (draft)':''}">${esc(sh.start)}–${esc(sh.end)}</div>`;
     if(off)return canMng
-      ?`<button onclick="App._shEdit('${u.id}','${d2}')" title="Normally their day off — you can still schedule a shift (e.g. Sunday cover)" style="width:100%;border:1px dashed var(--c-border);background:transparent;border-radius:7px;color:var(--c-text-3);font-size:10px;cursor:pointer;padding:4px 0">off · +</button>`
-      :`<div style="font-size:10px;color:var(--c-text-3);text-align:center;padding:5px 0">off</div>`;
+      ?`<button onclick="App._shEdit('${u.id}','${d2}')" title="Add a shift (any day, including Sundays)" style="width:100%;border:1px dashed var(--c-border);background:transparent;border-radius:7px;color:var(--c-text-3);font-size:11px;cursor:pointer;padding:4px 0">+</button>`
+      :`<div style="text-align:center;color:var(--c-text-3);font-size:10px;padding:5px 0">—</div>`;
     return canMng?`<button onclick="App._shEdit('${u.id}','${d2}')" style="width:100%;border:1px dashed var(--c-border);background:transparent;border-radius:7px;color:var(--c-text-3);font-size:11px;cursor:pointer;padding:4px 0">+</button>`:'<div style="text-align:center;color:var(--c-text-3);font-size:10px;padding:5px 0">—</div>';
   };
   const draftN=(DB.shifts||[]).filter(s=>s.status==='draft'&&week.includes(s.date)).length;
-  return `<div class="fade">${hdr('Shifts','Weekly roster — publish so colleagues see their shifts',canMng&&draftN?btn('Publish week ('+draftN+')','App._shPublish(\''+week[0]+'\',\''+week[6]+'\')',{variant:'primary',icon:'check'}):'')}
+  return `<div class="fade">${hdr('Shifts','Weekly roster — publish so colleagues see their shifts',(canMng?btn('Copy last week',`App._shCopyWeek('${week[0]}')`,{variant:'ghost',icon:'copy'}):'')+(canMng&&draftN?btn('Publish week ('+draftN+')','App._shPublish(\''+week[0]+'\',\''+week[6]+'\')',{variant:'primary',icon:'check'}):''))}
     ${_howBar('shifts')}
     ${offToday.length?`<div class="ui-card" style="padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-size:11.5px;font-weight:800;color:var(--c-text-2)">Off / on leave today:</span>${offToday.slice(0,10).map(u=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--c-text-2)">${avatar(u,'w-5 h-5','text-[8px]')}${esc(fullName(u))}</span>`).join('')}</div>`:''}
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
@@ -3262,6 +3306,22 @@ App._shSave=(uid2,date,id)=>{
   saveDB();closeModal();toast('Shift saved (draft — publish the week to share)');rr();
 };
 App._shDel=(id)=>{DB.shifts=(DB.shifts||[]).filter(s=>s.id!==id);sb.from('shifts').delete().eq('id',id).then(()=>{}).catch(()=>{});saveDB();closeModal();toast('Shift removed','warn');rr();};
+App._shCopyWeek=(ws)=>{
+  if(!can('scheduling','manage'))return;
+  const start=new Date(ws+'T00:00:00');
+  let n=0;
+  for(let i=0;i<7;i++){
+    const d2=new Date(start);d2.setDate(d2.getDate()+i);const cur=d2.toISOString().slice(0,10);
+    const prev=new Date(d2);prev.setDate(prev.getDate()-7);const pd=prev.toISOString().slice(0,10);
+    (DB.shifts||[]).filter(s2=>s2.date===pd).forEach(s2=>{
+      if((DB.shifts||[]).some(x=>x.userId===s2.userId&&x.date===cur))return;
+      const c={id:uid('sh'),userId:s2.userId,date:cur,start:s2.start,end:s2.end,locationId:s2.locationId||null,note:s2.note||'',status:'draft',publishedAt:null,createdBy:S.uid,createdAt:new Date().toISOString()};
+      DB.shifts.push(c);n++;
+    });
+  }
+  log(fullName(me()),'Roster copied from last week',ws+' ('+n+' shifts)');
+  saveDB();toast(n?n+' shifts copied as drafts — review then Publish':'Nothing to copy from last week',n?'ok':'warn');rr();
+};
 App._shPublish=(ws,we)=>{
   if(!can('scheduling','manage'))return;
   const drafts=(DB.shifts||[]).filter(s=>s.status==='draft'&&s.date>=ws&&s.date<=we);
@@ -3341,7 +3401,7 @@ function payrollPage(){
   if(!run&&can('payroll','run'))actions=btnP('Create draft run — '+month,'App._payRun()','plus');
   else if(run){
     if(run.status==='Draft'&&can('payroll','verify')&&allVerified)actions=btn('Mark verified','App._payAdvance(\'Verified\')',{variant:'primary',icon:'check'});
-    else if(run.status==='Draft')actions='<span style="font-size:12px;color:var(--c-text-3);align-self:center">Verify every line (✓) to continue'+(can('payroll','run')?' · attendance up to the '+cutoff+' cut-off':'')+'</span>';
+    else if(run.status==='Draft')actions=(can('payroll','verify')&&items.length?btn('Verify all','App._payVerifyAll()',{variant:'ghost',size:'sm',icon:'check'}):'')+'<span style="font-size:12px;color:var(--c-text-3);align-self:center">Verify every line (✓) to continue'+(can('payroll','run')?' · attendance up to the '+cutoff+' cut-off':'')+'</span>';
     if(run.status==='Verified'&&can('payroll','approve'))actions=btn('Approve (Head of People)','App._payAdvance(\'Approved\')',{variant:'primary',icon:'check'});
     if(run.status==='Approved'&&can('payroll','finalize'))actions=btn('Finalize payroll','App._payAdvance(\'Finalized\')',{variant:'brand',icon:'lock'});
     if(can('payroll','download')&&(run.status==='Approved'||run.status==='Finalized'))actions+=btn('WPS / bank file','App._payWPS()',{variant:'ghost',icon:'doc'});
@@ -3378,6 +3438,13 @@ App._payRun=()=>{
   _pushRow('payroll_runs',_pRunRow(run),'payroll');items.forEach(i=>_pushRow('payroll_items',_pItemRow(i),'payroll'));
   log(fullName(me()),'Payroll draft created',month+' · '+items.length+' people');
   saveDB();toast('Draft run created — verify each line');rr();
+};
+App._payVerifyAll=()=>{
+  if(!can('payroll','verify'))return toast('You need Payroll → Verify','err');
+  const month=S.filters.pyMonth;const run=(DB.payrollRuns||[]).find(r=>r.month===month&&r.status!=='RolledBack');if(!run)return;
+  (DB.payrollItems||[]).filter(i=>i.runId===run.id&&!i.verified).forEach(i=>{i.verified=true;i.verifiedBy=S.uid;_pushRow('payroll_items',_pItemRow(i),'payroll');});
+  log(fullName(me()),'Payroll verified all lines',month);
+  saveDB();toast('All lines verified');rr();
 };
 App._payVerify=(itemId)=>{
   if(!can('payroll','verify'))return toast('You need Payroll → Verify','err');
@@ -3504,7 +3571,7 @@ function _alertsCfgHTML(){
   const num=(key,label,suffix)=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="flex:1;font-size:12.5px;color:var(--c-text-2)">${label}</span><input ${canEdit?'':'disabled'} type="number" min="1" step="any" value="${Number(A[key])||0}" onchange="DB.hrmConfig.alerts.${key}=parseFloat(this.value)||0;saveDB()" class="ui-input" style="width:86px;min-height:0;height:32px;padding:4px 10px"/><span style="font-size:11px;color:var(--c-text-3);width:64px">${suffix}</span></div>`;
   return `<div class="ui-card" style="padding:16px">
     <h3 class="fd" style="font-size:14px;font-weight:800;margin-bottom:4px">Alerts & event triggers</h3>
-    <p style="font-size:11.5px;color:var(--c-text-3);margin-bottom:12px">Checked once a day when an HR / manager / admin opens the app. Alerts go in-app to the reporting manager & People team, and are queued for email (outbox).</p>
+    <p style="font-size:11.5px;color:var(--c-text-3);margin-bottom:12px">Simple rule: each switch below = one automatic watchdog. Once a day the app checks, and if something is off it tells the person\'s manager and the People team (bell now, email once a provider is connected). Numbers set how strict each watchdog is.</p>
     ${tog('late','Late arrival','Clock-in after schedule + grace')}
     ${tog('missedClockIn','No clock-in','Not clocked in an hour past the late threshold')}
     ${tog('leaveSLA','Leave SLA breach','Pending leave older than the SLA escalates to RM & HoP')}
@@ -3603,18 +3670,203 @@ function _setupGuideWidget(){
     </div>
   </div>`;
 }
+
+/* ═══════ SURVEYS — HR sets questions; on the run date everyone gets the right form ═══════
+   company: every employee rates the company · rate_manager: each person rates THEIR manager ·
+   rate_team: each manager rates every direct report. Results aggregate into simple scores. */
+function _mSv(r){return(r||[]).map(s=>({id:s.id,kind:s.kind||'company',title:_unesc(s.title)||'',questions:Array.isArray(s.questions)?s.questions:[],runDate:s.run_date||null,status:s.status||'Active',createdBy:s.created_by||null,createdAt:s.created_at}));}
+function _svRow(s){return{id:s.id,kind:s.kind,title:s.title||'',questions:s.questions||[],run_date:s.runDate||null,status:s.status||'Active',created_by:s.createdBy||null,created_at:s.createdAt||new Date().toISOString()};}
+function _mSvA(r){return(r||[]).map(a=>({id:a.id,surveyId:a.survey_id,byUser:a.by_user,aboutUser:a.about_user||null,answers:Array.isArray(a.answers)?a.answers:[],score:(a.score===null||a.score===undefined)?null:Number(a.score),createdAt:a.created_at}));}
+function _svARow(a){return{id:a.id,survey_id:a.surveyId,by_user:a.byUser,about_user:a.aboutUser||null,answers:a.answers||[],score:(a.score===null||a.score===undefined)?null:a.score,created_at:a.createdAt||new Date().toISOString()};}
+const SV_KINDS={company:'Company feedback (everyone answers)',rate_manager:'Rate your manager (everyone rates their own manager)',rate_team:'Manager rates the team (one form per team member)'};
+// Who owes what: [{aboutUser|null,label}] for the current user on a survey
+function _svTargetsFor(sv,uid2){
+  const u=uById(uid2);if(!u||sv.status!=='Active'||!sv.runDate||sv.runDate>todayISO())return[];
+  if(sv.kind==='company')return[{about:null,label:'the company'}];
+  if(sv.kind==='rate_manager'){const m=u.managerId?uById(u.managerId):null;return m?[{about:m.id,label:fullName(m)}]:[];}
+  if(sv.kind==='rate_team')return DB.users.filter(x=>x.managerId===uid2&&x.id!==uid2&&x.status==='Active').map(x=>({about:x.id,label:fullName(x)}));
+  return[];
+}
+function _svPendingFor(uid2){
+  const out=[];
+  (DB.surveys||[]).forEach(sv=>{_svTargetsFor(sv,uid2).forEach(t=>{
+    if(!(DB.surveyAnswers||[]).some(a=>a.surveyId===sv.id&&a.byUser===uid2&&(a.aboutUser||null)===(t.about||null)))out.push({sv,about:t.about,label:t.label});
+  });});
+  return out;
+}
+let _SVF=null; // fill draft {svId,about,vals:{qid:val}}
+function surveysPage(){
+  const pend=_svPendingFor(S.uid);
+  const mineDone=(DB.surveyAnswers||[]).filter(a=>a.byUser===S.uid);
+  const form=(item)=>{
+    const sv=item.sv;
+    if(!_SVF||_SVF.svId!==sv.id||(_SVF.about||null)!==(item.about||null))return `<div class="ui-card" style="padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+      <span style="width:36px;height:36px;border-radius:10px;background:var(--c-brand-soft);color:var(--c-brand-ink);display:grid;place-items:center">${ic('msg','w-4 h-4')}</span>
+      <div style="flex:1;min-width:0"><div class="fd" style="font-size:13.5px;font-weight:800;color:var(--c-text)">${esc(sv.title)}</div>
+      <div style="font-size:11.5px;color:var(--c-text-2)">About ${esc(item.label)} · ${sv.questions.length} question${sv.questions.length===1?'':'s'}</div></div>
+      ${btn('Fill now',`_SVF={svId:'${sv.id}',about:${item.about?`'${item.about}'`:'null'},vals:{}};rr()`,{variant:'primary',size:'sm'})}
+    </div>`;
+    const qs=sv.questions.map(q=>{
+      if(q.type==='text')return `<div style="margin-bottom:12px"><div style="font-size:13px;font-weight:700;color:var(--c-text);margin-bottom:6px">${esc(q.text)}</div><textarea rows="2" class="ui-input rf" style="resize:vertical" oninput="_SVF.vals['${q.id}']=this.value"></textarea></div>`;
+      return `<div style="margin-bottom:12px"><div style="font-size:13px;font-weight:700;color:var(--c-text);margin-bottom:6px">${esc(q.text)}</div>
+        <div style="display:flex;gap:6px">${[1,2,3,4,5].map(n=>`<button onclick="_SVF.vals['${q.id}']=${n};rr()" style="width:40px;height:40px;border-radius:10px;border:2px solid ${_SVF.vals[q.id]===n?'#0E9F6E':'var(--c-border)'};background:${_SVF.vals[q.id]===n?'#ECFDF5':'var(--c-surface)'};color:${_SVF.vals[q.id]===n?'#047857':'var(--c-text-2)'};font-weight:800;cursor:pointer">${n}</button>`).join('')}</div></div>`;
+    }).join('');
+    return `<div class="ui-card" style="padding:16px;margin-bottom:8px">
+      <div class="fd" style="font-size:14px;font-weight:800;color:var(--c-text);margin-bottom:2px">${esc(sv.title)} — about ${esc(item.label)}</div>
+      <div style="font-size:11px;color:var(--c-text-3);margin-bottom:12px">Ratings are 1 (poor) to 5 (excellent). Your answers go to the People team.</div>
+      ${qs}
+      <div style="display:flex;gap:8px;justify-content:flex-end">${btnG('Cancel','_SVF=null;rr()')}${btnP('Submit',`App._svSubmit()`)}</div>
+    </div>`;
+  };
+  return `<div class="fade">${hdr('Surveys','Answer what\'s assigned to you — results feed performance reports')}
+    ${pend.length?pend.map(form).join(''):empty('msg','Nothing to answer right now','Surveys appear here on their run date — company feedback, rating your manager, or rating your team.')}
+    ${mineDone.length?`<div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;margin:14px 0 8px">Submitted (${mineDone.length})</div>${mineDone.slice(0,10).map(a=>{const sv=(DB.surveys||[]).find(s=>s.id===a.surveyId);const ab=a.aboutUser?uById(a.aboutUser):null;return `<div style="font-size:12px;color:var(--c-text-2);padding:4px 0">✓ ${esc(sv?sv.title:'—')} — ${ab?esc(fullName(ab)):'the company'}${a.score!=null?' · avg '+a.score:''}</div>`;}).join('')}`:''}
+  </div>`;
+}
+App._svSubmit=()=>{
+  const d=_SVF;if(!d)return;
+  const sv=(DB.surveys||[]).find(s=>s.id===d.svId);if(!sv)return;
+  const missing=sv.questions.some(q=>q.type!=='text'&&!(d.vals[q.id]>=1));
+  if(missing)return toast('Answer every rating','err');
+  const answers=sv.questions.map(q=>({qid:q.id,value:d.vals[q.id]??''}));
+  const nums=answers.filter(a=>typeof a.value==='number');
+  const score=nums.length?Math.round(nums.reduce((x,y)=>x+y.value,0)/nums.length*10)/10:null;
+  const row={id:uid('sva'),surveyId:sv.id,byUser:S.uid,aboutUser:d.about||null,answers,score,createdAt:new Date().toISOString()};
+  DB.surveyAnswers.push(row);_pushRow('survey_answers',_svARow(row),'survey');
+  log(fullName(me()),'Survey submitted',sv.title);
+  _SVF=null;saveDB();toast('Thanks — submitted');rr();
+};
+/* HR Config → Surveys tab: create, monitor, results */
+function _surveyCfgHTML(){
+  const canEd=can('surveys','manage');
+  const list=(DB.surveys||[]).filter(s=>s.status!=='Deleted').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const results=(sv)=>{
+    const ans=(DB.surveyAnswers||[]).filter(a=>a.surveyId===sv.id);
+    if(!ans.length)return '<div style="font-size:11.5px;color:var(--c-text-3)">No responses yet.</div>';
+    const by={};ans.forEach(a=>{const k=a.aboutUser||'company';(by[k]=by[k]||[]).push(a);});
+    const rows=Object.keys(by).map(k=>{
+      const u=k==='company'?null:uById(k);
+      const sc=by[k].filter(a=>a.score!=null);
+      const avg=sc.length?Math.round(sc.reduce((x,y)=>x+y.score,0)/sc.length*10)/10:null;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px"><span style="flex:1;font-weight:600;color:var(--c-text)">${u?esc(fullName(u)):'The company'}</span><span style="color:var(--c-text-3)">${by[k].length} response${by[k].length===1?'':'s'}</span><span style="font-weight:800;color:${avg==null?'var(--c-text-3)':avg>=4?'#0B7A55':avg>=3?'#B45309':'#BE123C'}">${avg==null?'—':avg+' / 5'}</span></div>`;
+    }).join('');
+    return rows+`<button onclick="App._svCSV('${sv.id}')" class="ui-btn ui-btn-ghost ui-btn-sm" style="margin-top:6px">${ic('doc','w-3.5 h-3.5')}Export CSV</button>`;
+  };
+  const cards=list.map(sv=>`<div class="ui-card" style="padding:14px;margin-bottom:10px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="flex:1;min-width:160px"><div class="fd" style="font-size:13.5px;font-weight:800;color:var(--c-text)">${esc(sv.title)}</div>
+      <div style="font-size:11px;color:var(--c-text-3)">${esc(SV_KINDS[sv.kind]||sv.kind)} · runs ${sv.runDate?fmtS(sv.runDate):'—'} · ${sv.questions.length} questions</div></div>
+      ${chip(sv.status==='Active'?'Active':'Closed')}
+      ${canEd?btn(sv.status==='Active'?'Close':'Reopen',`App._svToggle('${sv.id}')`,{variant:'ghost',size:'sm'}):''}
+      ${canEd?btn('Delete',`App._svDel('${sv.id}')`,{variant:'danger',size:'sm'}):''}
+    </div>
+    <div style="border-top:1px dashed var(--c-border);margin-top:10px;padding-top:8px">${results(sv)}</div>
+  </div>`).join('');
+  return `<div class="ui-card" style="padding:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px"><h3 class="fd" style="font-size:14px;font-weight:800">Surveys & performance pulse</h3>${canEd?btnP('New survey','App._svNew()','plus'):''}</div>
+    <p style="font-size:11.5px;color:var(--c-text-3);margin-bottom:12px">On the run date, the right people are notified and the form appears in their Surveys tab. Scores aggregate here per person / manager / company.</p>
+    ${cards||'<div style="font-size:12px;color:var(--c-text-3)">No surveys yet — create the first one.</div>'}
+  </div>`;
+}
+App._svNew=()=>{
+  if(!can('surveys','manage'))return toast('You need Surveys → Manage','err');
+  window._SVN={kind:'company',qs:[{id:uid('q'),text:'How satisfied are you overall?',type:'rating'}]};
+  App._svRenderNew();
+};
+App._svRenderNew=()=>{
+  const d=window._SVN;if(!d)return;
+  modalShell({title:'New survey',size:'max-w-md',
+    body:`<div style="display:flex;flex-direction:column;gap:12px">
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Title *</label><input id="sv-title" value="${esc(d.title||'')}" oninput="window._SVN.title=this.value" class="ui-input rf" placeholder="e.g. Q3 pulse survey"/></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Who answers about whom</label><select class="ui-select rf" onchange="window._SVN.kind=this.value">${Object.keys(SV_KINDS).map(k=>`<option value="${k}" ${d.kind===k?'selected':''}>${SV_KINDS[k]}</option>`).join('')}</select></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Run date *</label><input id="sv-date" type="date" value="${d.date||todayISO()}" onchange="window._SVN.date=this.value" class="ui-input rf"/></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Questions</label>
+        ${d.qs.map((q,i)=>`<div style="display:flex;gap:6px;margin-bottom:6px"><input value="${esc(q.text)}" oninput="window._SVN.qs[${i}].text=this.value" class="ui-input rf" style="flex:1"/><select onchange="window._SVN.qs[${i}].type=this.value" class="ui-select rf" style="width:96px">${['rating','text'].map(t=>`<option ${q.type===t?'selected':''}>${t}</option>`).join('')}</select><button onclick="window._SVN.qs.splice(${i},1);App._svRenderNew()" style="border:none;background:transparent;color:var(--c-text-3);cursor:pointer">${ic('trash','w-3.5 h-3.5')}</button></div>`).join('')}
+        <button onclick="window._SVN.qs.push({id:uid('q'),text:'',type:'rating'});App._svRenderNew()" class="ui-btn ui-btn-ghost ui-btn-sm">${ic('plus','w-3.5 h-3.5')}Add question</button>
+      </div>
+    </div>`,
+    footer:btnG('Cancel','window._SVN=null;App.closeModal()')+btnP('Create survey','App._svCreate()')});
+};
+App._svCreate=()=>{
+  const d=window._SVN;if(!d)return;
+  if(!(d.title||'').trim())return toast('Give it a title','err');
+  const qs=d.qs.filter(q=>(q.text||'').trim());
+  if(!qs.length)return toast('Add at least one question','err');
+  const sv={id:uid('sv'),kind:d.kind,title:d.title.trim(),questions:qs,runDate:d.date||todayISO(),status:'Active',createdBy:S.uid,createdAt:new Date().toISOString()};
+  DB.surveys.push(sv);_pushRow('surveys',_svRow(sv),'survey');
+  log(fullName(me()),'Survey created',sv.title);
+  window._SVN=null;saveDB();closeModal();toast('Survey created — people are notified on the run date');rr();
+};
+App._svToggle=(id)=>{const sv=(DB.surveys||[]).find(s=>s.id===id);if(!sv)return;sv.status=sv.status==='Active'?'Closed':'Active';_pushRow('surveys',_svRow(sv),'survey');log(fullName(me()),'Survey '+sv.status.toLowerCase(),sv.title);saveDB();rr();};
+App._svDel=(id)=>{const sv=(DB.surveys||[]).find(s=>s.id===id);if(!sv)return;if(!confirm('Remove this survey from the list? Responses stay in the database and the deletion is logged.'))return;sv.status='Deleted';_pushRow('surveys',_svRow(sv),'survey');log(fullName(me()),'Deleted survey',sv.title);saveDB();toast('Removed (kept in database + audit)','warn');rr();};
+App._svCSV=(id)=>{
+  const sv=(DB.surveys||[]).find(s=>s.id===id);if(!sv)return;
+  const rows=[['By','About','Score',...sv.questions.map(q=>q.text)]];
+  (DB.surveyAnswers||[]).filter(a=>a.surveyId===id).forEach(a=>{
+    const by=uById(a.byUser),ab=a.aboutUser?uById(a.aboutUser):null;
+    rows.push([by?fullName(by):a.byUser,ab?fullName(ab):'Company',a.score==null?'':a.score,...sv.questions.map(q=>{const x=(a.answers||[]).find(y=>y.qid===q.id);return x?x.value:'';})]);
+  });
+  _csvDownload(rows,'survey_'+(sv.title||'export').replace(/\W+/g,'_'));
+};
+/* Letter templates editor (HR Config tab) */
+function _letterTplCfgHTML(){
+  _seedHRMPlan();const T=DB.hrmConfig.letterTemplates;const canEd=can('hrSettings','edit');
+  const key=S.filters.ltKey||Object.keys(T)[0];
+  const tpl=T[key]||{name:'',body:''};
+  return `<div class="ui-card" style="padding:16px">
+    <h3 class="fd" style="font-size:14px;font-weight:800;margin-bottom:8px">Letter templates</h3>
+    <p style="font-size:11.5px;color:var(--c-text-3);margin-bottom:10px">Placeholders fill automatically: {name} {position} {department} {salary} {joined} {company} {date}</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${Object.keys(T).map(k=>`<button class="ui-tab-pill${key===k?' on':''}" onclick="S.filters.ltKey='${k}';rr()">${esc(T[k].name)}</button>`).join('')}
+      ${canEd?`<button class="ui-tab-pill" onclick="const n=prompt('New template name');if(n){const k='tpl_'+Date.now();DB.hrmConfig.letterTemplates[k]={name:n,body:'Dear {name},\\n\\n\\n\\nHR Department\\n{company} · {date}'};S.filters.ltKey=k;saveDB();rr()}">+ New</button>`:''}</div>
+    <input ${canEd?'':'disabled'} value="${esc(tpl.name)}" onchange="DB.hrmConfig.letterTemplates['${key}'].name=this.value;saveDB()" class="ui-input rf" style="margin-bottom:8px"/>
+    <textarea ${canEd?'':'disabled'} rows="10" class="ui-input rf" style="font-family:Georgia,serif;font-size:13px;line-height:1.6;resize:vertical" oninput="DB.hrmConfig.letterTemplates['${key}'].body=this.value;clearTimeout(App._ltcT);App._ltcT=setTimeout(saveDB,800)">${esc(tpl.body)}</textarea>
+    ${canEd&&Object.keys(T).length>1?`<button onclick="if(confirm('Delete this template?')){delete DB.hrmConfig.letterTemplates['${key}'];S.filters.ltKey='';saveDB();rr()}" class="ui-btn ui-btn-ghost ui-btn-sm" style="margin-top:8px;color:var(--c-danger-ink)">${ic('trash','w-3.5 h-3.5')}Delete template</button>`:''}
+  </div>`;
+}
+
 /* ── "HOW THIS WORKS" bars — every complex page explains itself in one sentence,
       with chips linking to the tabs it feeds / reads from. ── */
 const HOW={
-  shifts:{t:'Plan the week as drafts → press Publish → each colleague is notified and sees only their own shifts. People on approved leave show as LEAVE automatically.',l:[['leave','Leave'],['attendance','Attendance']]},
-  overtime:{t:'You log extra hours → your manager approves. “Pay” lands in this month\'s payroll at the multiplier; “Time-in-lieu” becomes comp-off leave balance instead.',l:[['payroll','Payroll'],['leave','Leave'],['approvals','Approvals']]},
+  dashboard:{t:'Your day at a glance: who\'s in, what needs you, and quick actions. Most people never need another tab.',d:['Clock in/out here — it feeds Attendance and Payroll automatically.','“Mark today as WFH” tags your attendance for reports and payslips.','Cards show today\'s checklists, leave status and OKR check-ins — tap any to act.'],l:[['mychecklists','My Checklists'],['approvals','Approvals']]},
+  mychecklists:{t:'Everything assigned to YOU, day by day. Pick a date on the strip; submit each card.',d:['Miss the due time → the card turns LATE (red) and analytics record it.','Whether you may submit past/future dates or edit comes from your Personal settings.','Scheduled OKR check-ins appear here as one combined card on their due day.'],l:[['okr','OKRs'],['approvals','Approvals']]},
+  attendance:{t:'Clock-ins, hours and calendar for you (and your team, if your role allows).',d:['Late or missing clock-ins trigger alerts to the manager and People team.','Every present day becomes a PAID day in that month\'s payroll; unexplained absence is deducted.','Clocking in on your day off raises a comp-off request.'],l:[['payroll','Payroll'],['leave','Leave']]},
+  leave:{t:'Apply for time off and track balances; approvers act here or from the inbox.',d:['Apply → your manager is notified → pending >3 working days escalates to HoP.','Approved leave shows everywhere (who\'s-in, roster) and unpaid types reduce pay automatically.','Comp-off earned from overtime or off-day work is spent here.'],l:[['approvals','Approvals'],['payroll','Payroll']]},
+  tickets:{t:'Issues raised by people or auto-created when a checklist answer breaches a rule.',d:['Bad answers on escalation questions open tickets automatically and re-escalate while open.','Resolve with a note — the submitter is notified.'],l:[['mychecklists','My Checklists'],['questions','Questions']]},
+  announcements:{t:'Company-wide messages. Everyone sees them; HR/admins create them.',l:[['notifications','Notifications']]},
+  teamview:{t:'Live board of your team: today\'s checklist status, lates and open tickets per person. Click someone to drill into their calendar.',l:[['users','Users'],['approvals','Approvals']]},
+  users:{t:'The people directory: identity, manager, HRM schedule, salary and documents.',d:['“Reports to” decides who approves this person\'s leave/overtime and who sees them in Team.','Salary + IBAN here feed Payroll and the bank file.','Access is NOT set here — one role per person in Access Control.'],l:[['accesscontrol','Access Control'],['payroll','Payroll'],['hierarchy','Hierarchy']]},
+  hierarchy:{t:'The reporting tree, drawn from each person\'s “Reports to”. Fix structure in Users.',l:[['users','Users']]},
+  checklists:{t:'Build recurring task lists: frequency, assignees, questions, due time.',d:['On due days they appear in each assignee\'s My Checklists; late submissions are flagged.','Attach questions to capture numbers/photos — escalation rules can open tickets.'],l:[['questions','Questions'],['allcl','All Checklists']]},
+  allcl:{t:'Every checklist in the company in one list — edit, duplicate or reassign.',l:[['checklists','Create Checklist']]},
+  questions:{t:'The reusable question bank checklists pull from — with types, photo/comment rules and escalation.',l:[['checklists','Create Checklist'],['tickets','Tickets']]},
+  approvals:{t:'One inbox for every decision: leave, submissions, edits, documents, overtime.',d:['Approve/reject inline; the requester is notified instantly.','Filter by type and use “Approve all” for bulk.'],l:[['leave','Leave'],['overtime','Overtime']]},
+  notifications:{t:'Every alert lands here (and is queued for email once a provider is connected). Tap one to jump to the right tab.',l:[]},
+  hrmanalytics:{t:'HR dashboards plus the Reports hub: absentee, leave SLA, document expiries, overtime, WFH — each with CSV export.',l:[['payroll','Payroll'],['attendance','Attendance']]},
+  locations:{t:'Offices with GPS geofence — controls where clock-in works and holds location documents.',l:[['attendance','Attendance'],['users','Users']]},
+  departments:{t:'Departments and sub-departments; also holds each department\'s document folders.',l:[['users','Users'],['okr','OKRs']]},
+  settings:{t:'App-wide settings and templates.',l:[]},
+  audit:{t:'Every action anyone takes, filterable by person, department and tab. If you wonder “who changed this?” — the answer is here.',l:[['accesscontrol','Access Control']]},
+  profile:{t:'Your own details, documents and preferences.',l:[]},
+  shifts:{t:'Plan the week as drafts → press Publish → each colleague is notified and sees only their own shifts. People on approved leave show as LEAVE automatically.',d:['Off-day cells (e.g. Sunday) still accept shifts — “off · +”.','Editing a published shift returns it to draft until you publish again.'],l:[['leave','Leave'],['attendance','Attendance']]},
+  overtime:{t:'You log extra hours → your manager approves. “Pay” lands in this month\'s payroll at the multiplier; “Time-in-lieu” becomes comp-off leave balance instead.',d:['A weekly cap (HR Config → Alerts) blocks over-logging.','Pending items also appear in the Approvals inbox.'],l:[['payroll','Payroll'],['leave','Leave'],['approvals','Approvals']]},
   letters:{t:'Anyone requests a letter → HR edits & approves → Issue makes it print-ready. Name, position, salary and joining date auto-fill from the person\'s profile.',l:[['users','Users'],['lifecycle','Lifecycle']]},
-  lifecycle:{t:'Start a flow for a person → each step gets a real owner and a due date → owners tick them off and get reminded. The exit flow can suspend payroll automatically.',l:[['letters','Letters'],['payroll','Payroll'],['users','Users']]},
+  lifecycle:{t:'Start a flow for a person → each step gets a real owner and a due date → owners tick them off and get reminded. The exit flow can suspend payroll automatically.',d:['Templates for the steps live in HR Config → Flow templates.','Probation end dates on profiles trigger reminders to start the review.'],l:[['letters','Letters'],['payroll','Payroll'],['users','Users']]},
   discipline:{t:'Record a warning → the person and their manager are notified → it stays on file and expires by itself after 12 months.',l:[['users','Users'],['audit','Audit']]},
-  payroll:{t:'Reads the month automatically: clock-ins = paid days, unpaid leave & unexplained absence = deducted, approved overtime = added. You just verify → HoP approves → Finalize creates payslips + the bank file. Salaries are set on each user\'s profile.',l:[['attendance','Attendance'],['leave','Leave'],['overtime','Overtime'],['users','Users']]},
-  accesscontrol:{t:'One rule runs everything: a ROLE is a bundle of switches (which tabs, which buttons) — give each person ONE role, done. “Customize” only holds personal facts: past/future submission rights, HR-approver stage, cities and document folders.',l:[['users','Users'],['audit','Audit']]},
+  payroll:{t:'Reads the month automatically: clock-ins = paid days, unpaid leave & unexplained absence = deducted, approved overtime = added. You just verify → HoP approves → Finalize creates payslips + the bank file.',d:['Salaries and IBANs come from the user profile.','Exit flows put people on HOLD — shown greyed, excluded from the bank file.','Variance column compares each net to last month; rollback restarts a run.'],l:[['attendance','Attendance'],['leave','Leave'],['overtime','Overtime'],['users','Users']]},
+  accesscontrol:{t:'One rule runs everything: a ROLE is a bundle of switches (which tabs, which buttons) — give each person ONE role, done. “Personal” only holds personal facts: past/future submission rights, HR-approver stage, cities and document folders.',d:['Edit a role → everyone with it changes instantly.','You can never remove the last person holding Access Control.'],l:[['users','Users'],['audit','Audit']]},
   hrmconfig:{t:'Company-wide policy in one place: leave rules & holidays, alert thresholds (late, SLA, expiries), overtime caps, payroll cut-off, and the step templates for onboarding / probation / exit. Changes apply to everyone instantly.',l:[['payroll','Payroll'],['lifecycle','Lifecycle'],['leave','Leave']]},
-  okr:{t:'Create an objective with a target and a check-in day → the owner gets it as a task on that day → their numbers roll up the tree (L2 → L1 → L0) and the graph shows planned pace vs reality.',l:[['mychecklists','My Checklists'],['dashboard','Dashboard']]},
+  surveys:{t:'HR creates a survey with a run date → on that day the right people are notified: everyone rates the company, each person rates their manager, and managers rate each team member. Scores aggregate per person in HR Config → Surveys.',l:[['hrmconfig','HR Config']]},
+  okr:{t:'Create an objective with a target and a check-in day → the owner gets it as a task on that day → their numbers roll up the tree (L2 → L1 → L0) and the graph shows planned pace vs reality.',d:['Green = on pace, red = off pace, computed against the period; you can also mark status manually.','Every input and edit is kept in the objective\'s activity log.'],l:[['mychecklists','My Checklists'],['dashboard','Dashboard']]},
+};
+
+App._howModal=()=>{
+  const h=HOW[S.route];if(!h)return;
+  const nav=navFor().find(n=>n[0]===S.route);
+  modalShell({title:'How this tab works',sub:nav?nav[2]:'',size:'max-w-md',
+    body:`<div style="font-size:13.5px;color:var(--c-text);line-height:1.65">${h.t}</div>
+      ${h.d?`<div style="margin-top:12px;border-top:1px dashed var(--c-border);padding-top:10px">${h.d.map(x=>`<div style="display:flex;gap:8px;font-size:12.5px;color:var(--c-text-2);line-height:1.55;padding:4px 0"><span style="color:var(--c-brand-ink);font-weight:800;flex-shrink:0">→</span><span>${x}</span></div>`).join('')}</div>`:''}
+      ${h.l&&h.l.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;align-items:center"><span style="font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase">Linked tabs:</span>${h.l.filter(x=>navFor().some(n=>n[0]===x[0])).map(x=>`<button onclick="App.closeModal();App.go('${x[0]}')" class="ui-btn ui-btn-ghost ui-btn-sm">${x[1]} →</button>`).join('')}</div>`:''}`,
+    footer:btnP('Got it','App.closeModal()')});
 };
 function _howBar(key){
   const h=HOW[key];if(!h)return'';
@@ -3775,7 +4027,15 @@ function adminDash(){
   const late=fSubs.filter(s=>s.status==='Late').length;
   const depts=DB.departments.map(d=>{const us=DB.users.filter(u=>u.department===d.name).length;const cls=DB.checklists.filter(c=>c.department===d.name).length;const ss=fSubs.filter(s=>{const c=clById(s.checklistId);return c?.department===d.name;});return{name:d.name,us,cls,total:ss.length,onTime:ss.filter(s=>s.status==='On Time').length,late:ss.filter(s=>s.status==='Late').length};}).filter(d=>d.us||d.cls);
   const recent=fSubs.slice().sort((a,b)=>(b.submittedAt||'').localeCompare(a.submittedAt||'')).slice(0,8);
-  return`<div class="fade">${_setupGuideWidget()}${_whoIsInWidget()}${hdr('Dashboard',new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}))}
+  return`<div class="fade">${_setupGuideWidget()}${_whoIsInWidget()}${(()=>{
+  const t=[];const month=todayISO().slice(0,7);
+  if(can('overtime','approve')){const n=(DB.overtime||[]).filter(o=>o.status==='Pending').length;t.push(['Overtime to review',n,'overtime','clock',n?'#FFF7ED':'var(--c-surface-2)',n?'#C2410C':'var(--c-text-2)']);}
+  if(can('lifecycle','view')){const n=(DB.flows||[]).filter(f=>f.status==='Active').length;t.push(['Active flows',n,'lifecycle','users','var(--c-surface-2)','var(--c-text-2)']);}
+  if(can('letters','approve')){const n=(DB.letters||[]).filter(l=>l.status==='Requested').length;t.push(['Letters awaiting',n,'letters','doc',n?'#FFFBEB':'var(--c-surface-2)',n?'#B45309':'var(--c-text-2)']);}
+  if(can('payroll','view')){const run=(DB.payrollRuns||[]).find(r=>r.month===month&&r.status!=='RolledBack');t.push(['Payroll '+month,run?run.status:'Not started','payroll','chart','var(--c-surface-2)','var(--c-text-2)']);}
+  if(can('surveys','manage')){const n=(DB.surveys||[]).filter(s=>s.status==='Active').length;t.push(['Surveys running',n,'surveys','msg','var(--c-surface-2)','var(--c-text-2)']);}
+  return t.length?'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">'+t.map(x=>`<button onclick="App.go('${x[2]}')" style="flex:1;min-width:130px;display:flex;align-items:center;gap:10px;padding:12px;border-radius:12px;border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;text-align:left"><span style="width:34px;height:34px;border-radius:9px;background:${x[4]};color:${x[5]};display:grid;place-items:center;flex-shrink:0">${ic(x[3],'w-4 h-4')}</span><span style="min-width:0"><span class="fd" style="display:block;font-size:16px;font-weight:800;color:var(--c-text)">${x[1]}</span><span style="display:block;font-size:10.5px;color:var(--c-text-2)">${x[0]}</span></span></button>`).join('')+'</div>':'';
+})()}${hdr('Dashboard',new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}))}
   ${_dashFilterBar()}
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
     ${statCard('Active users',active,'sky',"App.go('users')")}${statCard('Pending approvals',pendA,'amber',"App.go('approvals')")}${statCard('Late submissions',late,'rose',"S.filters={stats:['Late']};App.go('dashboard')")}
@@ -5270,7 +5530,7 @@ function homeDash(){
   return `<div class="fade">
     <div style="margin-bottom:18px"><h1 class="fd" style="font-size:var(--fs-h1);font-weight:800;letter-spacing:-.6px;color:var(--c-text)">${greet}, ${esc(u.firstName||fullName(u))}</h1><p style="font-size:14px;color:var(--c-text-2);margin-top:3px">${new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})}</p></div>
     ${_clockWidget()}
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin:-6px 0 14px">${(()=>{const rec=(DB.attendance||[]).find(a=>a.userId===S.uid&&a.date===todayISO());const on=!!(rec&&(rec.flags||[]).includes('WFH'));return `<button onclick="App._togWFH()" style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;border:1.5px solid ${on?'#0EA5E9':'var(--c-border)'};background:${on?'#EFF6FF':'var(--c-surface)'};color:${on?'#0369A1':'var(--c-text-2)'};font-size:12px;font-weight:700;cursor:pointer">🏠 ${on?'Working from home today':'Mark today as WFH'}</button>`;})()}</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin:-6px 0 14px"><button onclick="App._howModal()" title="How this entire tab works" style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;border:1.5px solid var(--c-border);background:var(--c-surface);color:var(--c-text-2);font-size:12px;font-weight:700;cursor:pointer">? How this works</button>${(()=>{const rec=(DB.attendance||[]).find(a=>a.userId===S.uid&&a.date===todayISO());const on=!!(rec&&(rec.flags||[]).includes('WFH'));return `<button onclick="App._togWFH()" style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;border:1.5px solid ${on?'#0EA5E9':'var(--c-border)'};background:${on?'#EFF6FF':'var(--c-surface)'};color:${on?'#0369A1':'var(--c-text-2)'};font-size:12px;font-weight:700;cursor:pointer">🏠 ${on?'Working from home today':'Mark today as WFH'}</button>`;})()}</div>
     ${(isMgr()||can('teamview','view'))?_whoIsInWidget():''}
     ${tiles?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">${tiles}</div>`:''}
     <div class="grid md:grid-cols-2 gap-4 items-start" style="margin-bottom:16px">${clCard}${leaveCard}${okrHomeCard}</div>
@@ -5307,6 +5567,7 @@ function myClsPage(){
       <p style="font-size:13px;color:var(--c-text-2);margin-top:2px">${new Date(sel+'T00:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})}</p>
     </div>
     <div style="display:flex;gap:4px;align-items:center;margin-top:2px">
+      <button onclick="App._howModal()" title="How this entire tab works" style="width:32px;height:32px;border-radius:8px;border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;display:grid;place-items:center;color:var(--c-text-2);font-weight:800">?</button>
       <button type="button" aria-label="Previous week" onclick="(()=>{S.calWk--;const ref2=new Date(todayISO()+'T00:00:00');const dow2=ref2.getDay();ref2.setDate(ref2.getDate()+(dow2===0?-6:1-dow2)+S.calWk*7);const oldDow=new Date(S.calDate+'T00:00:00').getDay()||7;const nd=new Date(ref2);nd.setDate(nd.getDate()+oldDow-1);S.calDate=nd.getFullYear()+'-'+String(nd.getMonth()+1).padStart(2,'0')+'-'+String(nd.getDate()).padStart(2,'0');S.expandedCl=null;rr();App._lazyLoadDate('mychecklists')})()" style="width:32px;height:32px;border-radius:8px;border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;display:grid;place-items:center;color:var(--c-text-2)">${ic('back','w-4 h-4')}</button>
       <button type="button" onclick="S.calWk=0;S.calDate='${today}';S.expandedCl=null;rr();App._lazyLoadDate('mychecklists')" style="padding:0 12px;height:32px;border-radius:8px;font-size:12px;font-weight:700;border:none;cursor:pointer;background:${S.calWk===0&&sel===today?'var(--c-ink)':'var(--c-surface-2)'};color:${S.calWk===0&&sel===today?'#fff':'var(--c-text-2)'}">Today</button>
       <button type="button" aria-label="Next week" onclick="(()=>{S.calWk++;const ref2=new Date(todayISO()+'T00:00:00');const dow2=ref2.getDay();ref2.setDate(ref2.getDate()+(dow2===0?-6:1-dow2)+S.calWk*7);const oldDow=new Date(S.calDate+'T00:00:00').getDay()||7;const nd=new Date(ref2);nd.setDate(nd.getDate()+oldDow-1);S.calDate=nd.getFullYear()+'-'+String(nd.getMonth()+1).padStart(2,'0')+'-'+String(nd.getDate()).padStart(2,'0');S.expandedCl=null;rr();App._lazyLoadDate('mychecklists')})()" style="width:32px;height:32px;border-radius:8px;border:1px solid var(--c-border);background:var(--c-surface);cursor:pointer;display:grid;place-items:center;color:var(--c-text-2)">${ic('chevR','w-4 h-4')}</button>
@@ -5772,7 +6033,8 @@ function teamViewPage(){
     const team=orgWide?DB.users.filter(u=>u.id!==S.uid&&u.status==='Active'&&u.role!=='Admin'):directReports;
     if(!team.length)return`<div class="fade">${hdr('Team','Live checklist status of your team')}${empty('users','No team members yet','Nobody reports to you. Ask an admin to set you as someone\'s manager in Users, or check Access Control → Team view.')}</div>`;
     return`<div class="fade">
-      ${hdr('Team','Select a team member to view their checklists')}
+      ${hdr('Team','Your people and every checklist — one place')}
+      ${can('allChecklists','view')?`<div style="display:flex;gap:6px;margin-bottom:14px"><button class="ui-tab-pill on">Team status</button><button class="ui-tab-pill" onclick="App.go('allcl')">All checklists</button></div>`:''}
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
         ${team.map(u=>{
           const asgn=DB.checklists.filter(c=>(c.assignees||[]).includes(u.id)).length;
@@ -6091,6 +6353,7 @@ function allClsPage(){
   }
 
   return`<div class="fade">
+    ${can('teamview','view')?`<div style="display:flex;gap:6px;margin-bottom:14px"><button class="ui-tab-pill" onclick="App.go('teamview')">Team status</button><button class="ui-tab-pill on">All checklists</button></div>`:''}
     ${hdr('All Checklists',"Everyone's checklists and responses")}
     <!-- Filters row -->
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
@@ -6201,7 +6464,10 @@ function unifiedApprovalsPage(){
   //   guarantees the page can never get visually stuck on "Loading…" if a background fetch is slow.
   const body=rows.length?rows.map(_inboxRow).join('')
     :empty(emptyMsg[0],emptyMsg[1],emptyMsg[2]);
-  return '<div class="fade">'+hdr('Approvals','Every request to review, in one place')
+  const inboxPills='<div style="display:flex;gap:6px;margin-bottom:14px">'+
+    '<button class="ui-tab-pill on">To approve</button>'+
+    '<button class="ui-tab-pill" onclick="App.go(\'notifications\')">Alerts'+(_notifCount()?' ('+_notifCount()+')':'')+'</button></div>';
+  return '<div class="fade">'+hdr('Inbox','Approvals and alerts — one place for everything that needs you')+inboxPills
     +statusBar+chips+bulkBar
     +'<div class="space-y-3">'+body+'</div></div>';
 }
@@ -7471,7 +7737,8 @@ function notificationsPage(){
 
   };
 
-  return '<div class="fade">'+hdr('Notifications','')
+  const _inbPills='<div style="display:flex;gap:6px;margin-bottom:14px">'+(can('approvals','view')?'<button class="ui-tab-pill" onclick="App.go(\'approvals\')">To approve'+(_approvalPendingCount()?' ('+_approvalPendingCount()+')':'')+'</button>':'')+'<button class="ui-tab-pill on">Alerts</button></div>';
+  return '<div class="fade">'+hdr('Inbox','Alerts and updates')+_inbPills
     // A1: explicit "Mark all read" — the ONLY whole-list flip. Shown only when unread exist.
     +(hadUnread?'<div style="display:flex;justify-content:flex-end;margin-bottom:12px"><button class="ui-btn ui-btn-subtle ui-btn-sm" onclick="App._markAllNotifsRead()">'+ic('approve','w-4 h-4')+'Mark all read</button></div>':'')
     // Tabs
@@ -9106,7 +9373,7 @@ function settingsPage(){
   const ns=_ns;
   const TABS=[['workflow','Workflow'],['inapp','In-App'],['email','Email']];
   if(can('settings','edit'))TABS.push(['hrmemail','HR Email']); // §4 (FRONTEND-ONLY prefs)
-  TABS.push(['templates','Templates'],['data','Data']);
+  TABS.push(['templates','Templates']);
   const tabBar=`<div style="margin-bottom:20px">${chipBar(TABS,stab,'App._setSTab')}</div>`;
 
   const workflowTab=`<div class="space-y-4">
@@ -10510,7 +10777,7 @@ function _leaveDaysInRange(r,d1,d2){
 /* ════════ HR CONFIG PAGE ════════ */
 function hrmConfigPage(){
   _seedProfiles();
-  const TABS=[['policy','Timing & accrual'],['types','Leave Types'],['holidays','Holidays'],['alerts','Alerts & triggers'],['flows','Flow templates']];
+  const TABS=[['policy','Timing & accrual'],['types','Leave Types'],['holidays','Holidays'],['alerts','Alerts & triggers'],['flows','Flow templates'],['lettertpl','Letter templates'],['surveys','Surveys']];
   // §3a/§3b: balance-management tabs, gated by the leave-balances permission (shim → HR/Admin).
   if(can('leaveBalances','edit'))TABS.push(['bulk','Bulk Balances']);
   if(can('leaveBalances','grant'))TABS.push(['compoff','Comp-off']);
@@ -10523,11 +10790,14 @@ function hrmConfigPage(){
   let body='';
   if(tab==='alerts')body=_alertsCfgHTML();
   if(tab==='flows')body=_flowTplCfgHTML();
+  if(tab==='lettertpl')body=_letterTplCfgHTML();
+  if(tab==='surveys')body=_surveyCfgHTML();
   if(tab==='policy'){
     const canEdit=can('hrSettings','edit');
     body=`<div class="space-y-4">
       <div style="background:#fff;border-radius:16px;border:1px solid #ECEDF0;padding:16px">
-        <h3 class="fd font-bold text-sm mb-3">Timing & accrual</h3>
+        <h3 class="fd font-bold text-sm mb-1">Timing & accrual</h3>
+        <p style="font-size:11.5px;color:#9CA3AF;margin-bottom:10px">Three simple company-wide rules: how many minutes late is still OK (grace), when an open day auto-closes, and whether leave years run Jan–Dec or from each person\'s joining date.</p>
         <div class="grid grid-cols-2 gap-3">${fld('Grace period (min)','cfg-grace',prof.grace??15,'number')}${fld('Auto clock-out time','cfg-auto',prof.autoCloseAt||'00:00','time')}</div>
         <div class="mt-3">${selF('How a leave year is counted','cfg-basis',[['calendar','Calendar year (Jan–Dec)'],['anniversary','From each employee’s joining date']],prof.leaveYearBasis||'calendar')}
           <p style="font-size:11px;color:#9CA3AF;margin-top:4px">Calendar year resets every January; anniversary resets on each employee's own joining date.</p></div>
@@ -10851,6 +11121,7 @@ App._acAssignRole=(uid2,roleId)=>{
   // ONE role: derive the legacy base-role field from the access role so nothing is set twice.
   const baseRole=roleId==='superadmin'?'Admin':roleId==='admin'?'SubAdmin':'User';
   if(u.role!==baseRole){u.role=baseRole;sb.from('profiles').update({role:baseRole}).eq('id',u.id).then(()=>{}).catch(()=>{});}
+  u.hrm.isHR=(roleId==='hr'); // ONE concept: the HR role IS the HR approver stage
   log(fullName(me()),'Role assigned',fullName(u)+' → '+(DB.roleProfiles[roleId].name||roleId));
   saveDB();_syncRoleProfiles();toast(fullName(u)+' → '+(DB.roleProfiles[roleId].name||roleId));rr();
 };
@@ -10898,8 +11169,7 @@ App._renderACUser=()=>{
         ${_acTogBtn(ap.edited===true,'Edited entry',`App._acAppr('edited')`,dis)}
       </div></div>
       <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">HR approver stage</div>
-        ${_acTogBtn(d.isHR===true,'Acts as HR (2nd) stage in leave approvals',`App._acHRFlag()`,dis)}
-        <div style="font-size:10.5px;color:var(--c-text-3);margin-top:5px;line-height:1.4">HR <b>modules</b> (attendance, balances, HR settings…) come from the assigned role — e.g. the built-in “HR” role.</div>
+        <div style="font-size:11.5px;color:var(--c-text-2);line-height:1.5">${d.isHR?'✓ Yes — this person has the <b>HR role</b>, so they act as the HR (2nd) stage in leave approvals.':'No — give them the <b>HR role</b> (in the People table) to make them an HR approver.'}</div>
       </div>
       <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">City access <span style="font-weight:500;color:var(--c-text-3)">(none = all)</span></div>
         <div style="display:flex;flex-wrap:wrap;gap:5px">${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>_acTogBtn((d.cities||[]).includes(l.id),l.name,`App._acCity('${l.id}')`,dis)).join('')||'<span style="font-size:11px;color:var(--c-text-3)">No locations.</span>'}</div>
@@ -10915,9 +11185,13 @@ App._renderACUser=()=>{
     </div>`;
   };
   const docs=`<div style="${lab};margin:2px 0 4px">Document access <span style="text-transform:none;font-weight:600">(also unlocks the Departments / Locations tabs)</span></div>
+    <div style="font-size:11px;font-weight:800;color:var(--c-text-3);margin:2px 0 4px">Departments</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:2px 20px;margin-bottom:10px">
+      ${(DB.departments||[]).map(dp=>docRow('departments',dp.id,dp.name)).join('')||'<span style="font-size:11px;color:var(--c-text-3)">No departments.</span>'}
+    </div>
+    <div style="font-size:11px;font-weight:800;color:var(--c-text-3);margin:2px 0 4px">Locations</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:2px 20px;margin-bottom:14px">
-      ${(DB.departments||[]).map(dp=>docRow('departments',dp.id,dp.name)).join('')}
-      ${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>docRow('locations',l.id,l.name+' (location)')).join('')}
+      ${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>docRow('locations',l.id,l.name)).join('')||'<span style="font-size:11px;color:var(--c-text-3)">No locations.</span>'}
     </div>`;
   // per-area overrides: follows role by default; Override copies the role's area for editing
   const groups={};PERM_AREAS.forEach(a=>{(groups[a.group||'System']=groups[a.group||'System']||[]).push(a);});
