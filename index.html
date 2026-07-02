@@ -1847,19 +1847,21 @@ const navFor=()=>NAV_ALL.filter(n=>{try{return !!n[3]();}catch(e){return false;}
    navSectionsFor() buckets that SAME flat list into Daily + collapsible sections. No route or
    can()-gating logic changes — it only reshapes for rendering. Every flat item lands somewhere
    (unknown keys fall through to a "More" section so nothing is ever dropped). */
-const NAV_DAILY=['dashboard','approvals','leave','attendance','tickets','mychecklists','notifications'];
+const NAV_DAILY=['dashboard','mychecklists','approvals','notifications']; // keep the daily strip tiny — everything else lives in named sections
 const NAV_SECTION_OF={
-  // Work
-  mychecklists:'__daily',checklists:'Work',allcl:'Work',questions:'Work',announcements:'Work',shifts:'Work',letters:'Work',overtime:'Work',
+  // My time — everything about hours, presence and time off
+  attendance:'Time',leave:'Time',overtime:'Time',shifts:'Time',
+  // Work — tasks and content
+  checklists:'Work',allcl:'Work',questions:'Work',tickets:'Work',letters:'Work',announcements:'Work',
   // People
   users:'People',teamview:'People',hierarchy:'People',lifecycle:'People',discipline:'People',
   // Insights
   analytics:'Insights',hrmanalytics:'Insights',okr:'Insights',
-  // Setup
-  hrmconfig:'Setup',locations:'Setup',departments:'Setup',settings:'Setup',audit:'Setup',accesscontrol:'Setup',payroll:'Setup',
+  // Setup (admin plumbing — collapsed unless you're in it)
+  hrmconfig:'Setup',payroll:'Setup',locations:'Setup',departments:'Setup',settings:'Setup',audit:'Setup',accesscontrol:'Setup',
 };
-const NAV_SECTION_ORDER=['Work','People','Insights','Setup'];
-const NAV_SECTION_ICON={Work:'list',People:'users',Insights:'chart',Setup:'cog'};
+const NAV_SECTION_ORDER=['Time','Work','People','Insights','Setup'];
+const NAV_SECTION_ICON={Time:'clock',Work:'list',People:'users',Insights:'chart',Setup:'cog'};
 function navSectionsFor(){
   const flat=navFor();
   const daily=[],sections={};
@@ -1987,7 +1989,7 @@ function shell(content){
           <div class="nav-brand" style="width:24px;height:24px;font-size:11px">B</div>
           <span class="fd" style="font-weight:800;font-size:15px">Bridge</span>
         </div>
-        <div style="flex:1"></div>
+        <div style="flex:1"></div><button onclick="App._cmdk()" class="hidden md:inline-flex" style="align-items:center;gap:7px;padding:7px 14px;border-radius:10px;border:1px solid var(--c-border);background:var(--c-surface);color:var(--c-text-3);font-size:12px;font-weight:600;cursor:pointer">${ic('search','w-3.5 h-3.5')}Search… <span style="font-size:10px;font-weight:800;background:var(--c-surface-2);border-radius:5px;padding:1px 5px">⌘K</span></button>
         <button onclick="App.go('notifications')" class="md:hidden" aria-label="Notifications" style="position:relative;width:38px;height:38px;border-radius:10px;border:none;background:transparent;color:var(--c-text);display:grid;place-items:center;cursor:pointer">${ic('bell','w-5 h-5')}${(()=>{const n=_notifCount();return n?`<span style="position:absolute;top:5px;right:5px">${countBadge(n,'danger')}</span>`:'';})()}</button>
         <button onclick="App.go('profile')" class="md:hidden" aria-label="Profile">${avatar(u,'w-8 h-8','text-[11px]')}</button>
       </div>
@@ -3523,6 +3525,61 @@ App._pdExpiry=(uid2,docId,val)=>{
   saveDB();toast(val?'Expiry saved — reminders will fire ahead of it':'Expiry cleared');
 };
 
+/* ── QUICK SEARCH (Ctrl/⌘ K) — jump to any page, person or OKR you're allowed to see ── */
+App._cmdk=()=>{
+  if(!S.uid)return;
+  modalShell({title:'Quick search',sub:'Pages · people · OKRs — type, then Enter',size:'max-w-md',
+    body:`<div><input id="cmdk-in" class="ui-input rf" placeholder="e.g. payroll, Sara, revenue…" oninput="App._cmdkQ(this.value)" onkeydown="if(event.key==='Enter'){const b=document.querySelector('#cmdk-res [data-go]');if(b)b.click();}"/>
+      <div id="cmdk-res" style="margin-top:10px;max-height:320px;overflow-y:auto"></div></div>`,
+    footer:btnG('Close','App.closeModal()')});
+  setTimeout(()=>{const el=document.getElementById('cmdk-in');if(el){el.focus();App._cmdkQ('');}},60);
+};
+App._cmdkQ=(q)=>{
+  const box=document.getElementById('cmdk-res');if(!box)return;
+  q=(q||'').toLowerCase().trim();
+  const out=[];
+  navFor().forEach(([r,i,l])=>{if(!q||l.toLowerCase().includes(q))out.push({icon:i,label:l,sub:'Page',go:`App.closeModal();App.go('${r}')`});});
+  if(can('employees','view'))scopedUsers('employees').forEach(u=>{if(q&&fullName(u).toLowerCase().includes(q))out.push({icon:'users',label:fullName(u),sub:(u.position||'Person')+' · '+(u.department||''),go:`App.closeModal();S.search='${esc(fullName(u))}';App.go('users')`});});
+  if(can('okr','view'))okrVisible().forEach(o=>{if(q&&(o.title||'').toLowerCase().includes(q))out.push({icon:'chart',label:o.title,sub:'OKR · L'+okrLevel(o),go:`App.closeModal();App.go('okr');S.filters.okrQ='${esc(o.title)}';rr()`});});
+  box.innerHTML=out.slice(0,12).map(r=>`<button data-go onclick="${r.go}" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;border:none;background:transparent;cursor:pointer;text-align:left" onmouseover="this.style.background='var(--c-surface-2)'" onmouseout="this.style.background='transparent'">
+    <span style="width:30px;height:30px;border-radius:9px;background:var(--c-surface-2);display:grid;place-items:center;color:var(--c-text-2);flex-shrink:0">${ic(r.icon,'w-4 h-4')}</span>
+    <span style="min-width:0"><span style="display:block;font-size:13px;font-weight:700;color:var(--c-text)">${esc(r.label)}</span><span style="display:block;font-size:10.5px;color:var(--c-text-3)">${esc(r.sub)}</span></span>
+  </button>`).join('')||'<div style="padding:14px;font-size:12.5px;color:var(--c-text-3)">Nothing matches.</div>';
+};
+window.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();App._cmdk();}});
+
+/* ── SETUP GUIDE — a living checklist on the admin dashboard: what to configure next, one click away.
+      Auto-checks real data; disappears forever once complete (or when dismissed). ── */
+function _setupGuideWidget(){
+  if(!can('accessControl','manage'))return'';
+  try{if(localStorage.getItem('bridge_setup_dismissed'))return'';}catch(e){}
+  const items=[
+    ['Add your departments',(DB.departments||[]).length>0,'departments'],
+    ['Add your people',(DB.users||[]).filter(u=>u.status==='Active').length>1,'users'],
+    ['Set who reports to whom',(DB.users||[]).some(u=>u.managerId),'users'],
+    ['Assign access roles',(DB.users||[]).filter(u=>u.status==='Active').every(u=>u.hrm?.roleProfileId),'accesscontrol'],
+    ['Create the first checklist',(DB.checklists||[]).length>0,'checklists'],
+    ['Add office locations (geofence)',(DB.locations||[]).some(l=>l.status==='Active'),'locations'],
+    ['Set salaries for payroll',(DB.users||[]).some(u=>Number(u.hrm?.salary?.basic)>0),'users'],
+    ['Create your first OKR',(DB.okrs||[]).length>0,'okr'],
+  ];
+  const done=items.filter(i=>i[1]).length;
+  if(done===items.length)return'';
+  return `<div class="ui-card" style="padding:16px;margin-bottom:16px;border-left:3px solid var(--c-brand)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <div style="flex:1"><div class="fd" style="font-size:14px;font-weight:800;color:var(--c-text)">Setup guide — ${done}/${items.length} done</div>
+      <div style="font-size:11.5px;color:var(--c-text-3)">Finish these and the app runs itself. Each one is one click away.</div></div>
+      <button onclick="try{localStorage.setItem('bridge_setup_dismissed','1')}catch(e){};rr()" style="border:none;background:transparent;color:var(--c-text-3);cursor:pointer;font-size:11px;font-weight:700">Hide</button>
+    </div>
+    <div style="height:6px;background:var(--c-border);border-radius:3px;overflow:hidden;margin-bottom:10px"><div style="height:100%;width:${Math.round(done/items.length*100)}%;background:var(--c-brand)"></div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:6px">
+      ${items.map(([l,ok,r])=>`<button onclick="App.go('${r}')" style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:9px;border:1px solid ${ok?'transparent':'var(--c-border)'};background:${ok?'transparent':'var(--c-surface)'};cursor:pointer;text-align:left;${ok?'opacity:.55':''}">
+        <span style="width:18px;height:18px;border-radius:50%;background:${ok?'#22C55E':'var(--c-border)'};color:#fff;display:grid;place-items:center;flex-shrink:0">${ok?ic('check','w-3 h-3'):''}</span>
+        <span style="font-size:12px;font-weight:${ok?'600':'700'};color:var(--c-text);${ok?'text-decoration:line-through':''}">${l}</span>
+      </button>`).join('')}
+    </div>
+  </div>`;
+}
 /* ===== LOGIN ===== */
 function loginView(){return`<div class="min-h-screen flex" style="background:var(--c-bg)">
   <div class="hidden lg:flex flex-col justify-between" style="width:44%;background:linear-gradient(160deg,#1C212B 0%,#13161D 100%);color:#fff;padding:56px;position:relative;overflow:hidden">
@@ -3667,7 +3724,7 @@ function adminDash(){
   const late=fSubs.filter(s=>s.status==='Late').length;
   const depts=DB.departments.map(d=>{const us=DB.users.filter(u=>u.department===d.name).length;const cls=DB.checklists.filter(c=>c.department===d.name).length;const ss=fSubs.filter(s=>{const c=clById(s.checklistId);return c?.department===d.name;});return{name:d.name,us,cls,total:ss.length,onTime:ss.filter(s=>s.status==='On Time').length,late:ss.filter(s=>s.status==='Late').length};}).filter(d=>d.us||d.cls);
   const recent=fSubs.slice().sort((a,b)=>(b.submittedAt||'').localeCompare(a.submittedAt||'')).slice(0,8);
-  return`<div class="fade">${_whoIsInWidget()}${hdr('Dashboard',new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}))}
+  return`<div class="fade">${_setupGuideWidget()}${_whoIsInWidget()}${hdr('Dashboard',new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}))}
   ${_dashFilterBar()}
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
     ${statCard('Active users',active,'sky',"App.go('users')")}${statCard('Pending approvals',pendA,'amber',"App.go('approvals')")}${statCard('Late submissions',late,'rose',"S.filters={stats:['Late']};App.go('dashboard')")}
