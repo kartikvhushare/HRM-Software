@@ -542,10 +542,10 @@ function _cutoff30ISO(){return new Date(Date.now()-30*_DAY_MS).toISOString();}
 function _cutoff30Date(){return _cutoff30ISO().slice(0,10);}
 function _mapTk(rows){return(rows||[]).map(t=>({id:t.id,title:t.title||'',description:t.description||'',priority:t.priority||'Medium',status:t.status||'Open',assignedTo:t.assigned_to||null,createdBy:t.created_by||null,checklistId:t.checklist_id||null,questionId:t.question_id||null,questionText:t.question_text||'',answerGiven:t.answer_given||'',submitterId:t.submitter_id||null,date:t.date||null,createdAt:t.created_at,resolvedAt:t.resolved_at||null,resolveNote:t.resolve_note||'',viewedBy:t.viewed_by||[]}));}
 /* ── OKR v2 mappers + row builders (hierarchy nodes / check-ins / activity logs) ── */
-function _mOKR(rows){return(rows||[]).map(o=>({id:o.id,parentId:o.parent_id||null,title:_unesc(o.title)||'',description:_unesc(o.description)||'',departmentId:o.department_id||null,ownerId:o.owner_id||null,metricType:o.metric_type||'number',startValue:(o.start_value===null||o.start_value===undefined)?0:Number(o.start_value),targetValue:(o.target_value===null||o.target_value===undefined)?null:Number(o.target_value),unit:_unesc(o.unit)||'',direction:o.direction||'up',frequency:(o.frequency&&typeof o.frequency==='object')?o.frequency:{},periodStart:o.period_start||null,periodEnd:o.period_end||null,statusMode:o.status_mode||'auto',statusManual:o.status_manual||null,sort:o.sort||0,createdBy:o.created_by||null,createdAt:o.created_at,updatedAt:o.updated_at||null}));}
+function _mOKR(rows){return(rows||[]).map(o=>({id:o.id,parentId:o.parent_id||null,title:_unesc(o.title)||'',description:_unesc(o.description)||'',departmentId:o.department_id||null,subDepartmentId:o.sub_department_id||null,ownerId:o.owner_id||null,metricType:o.metric_type||'number',startValue:(o.start_value===null||o.start_value===undefined)?0:Number(o.start_value),targetValue:(o.target_value===null||o.target_value===undefined)?null:Number(o.target_value),unit:_unesc(o.unit)||'',direction:o.direction||'up',frequency:(o.frequency&&typeof o.frequency==='object')?o.frequency:{},periodStart:o.period_start||null,periodEnd:o.period_end||null,statusMode:o.status_mode||'auto',statusManual:o.status_manual||null,sort:o.sort||0,createdBy:o.created_by||null,createdAt:o.created_at,updatedAt:o.updated_at||null}));}
 function _mOKRCheckin(rows){return(rows||[]).map(c=>({id:c.id,okrId:c.okr_id,userId:c.user_id||null,date:c.date,value:(c.value===null||c.value===undefined)?null:Number(c.value),comment:_unesc(c.comment)||'',photos:Array.isArray(c.photos)?c.photos:[],statusMark:c.status_mark||null,editCount:c.edit_count||0,createdAt:c.created_at,updatedAt:c.updated_at||null}));}
 function _mOKRLog(rows){return(rows||[]).map(l=>({id:l.id,okrId:l.okr_id,actorId:l.actor_id||null,action:l.action||'',details:(l.details&&typeof l.details==='object')?l.details:{},createdAt:l.created_at}));}
-function _okrRow(o){return{id:o.id,parent_id:o.parentId||null,title:o.title||'',description:o.description||'',department_id:o.departmentId||null,owner_id:o.ownerId||null,metric_type:o.metricType||'number',start_value:(o.startValue===null||o.startValue===undefined||o.startValue==='')?0:o.startValue,target_value:(o.targetValue===null||o.targetValue===undefined||o.targetValue==='')?null:o.targetValue,unit:o.unit||'',direction:o.direction||'up',frequency:o.frequency||{},period_start:o.periodStart||null,period_end:o.periodEnd||null,status_mode:o.statusMode||'auto',status_manual:o.statusManual||null,sort:o.sort||0,created_by:o.createdBy||null,created_at:o.createdAt||new Date().toISOString(),updated_at:new Date().toISOString()};}
+function _okrRow(o){return{id:o.id,parent_id:o.parentId||null,title:o.title||'',description:o.description||'',department_id:o.departmentId||null,sub_department_id:o.subDepartmentId||null,owner_id:o.ownerId||null,metric_type:o.metricType||'number',start_value:(o.startValue===null||o.startValue===undefined||o.startValue==='')?0:o.startValue,target_value:(o.targetValue===null||o.targetValue===undefined||o.targetValue==='')?null:o.targetValue,unit:o.unit||'',direction:o.direction||'up',frequency:o.frequency||{},period_start:o.periodStart||null,period_end:o.periodEnd||null,status_mode:o.statusMode||'auto',status_manual:o.statusManual||null,sort:o.sort||0,created_by:o.createdBy||null,created_at:o.createdAt||new Date().toISOString(),updated_at:new Date().toISOString()};}
 function _okrCheckinRow(c){return{id:c.id,okr_id:c.okrId,user_id:c.userId||null,date:c.date,value:(c.value===null||c.value===undefined||c.value==='')?null:c.value,comment:c.comment||'',photos:(c.photos||[]).filter(p=>typeof p==='string'&&p!=='[photo]'),status_mark:c.statusMark||null,edit_count:c.editCount||0,created_at:c.createdAt||new Date().toISOString(),updated_at:new Date().toISOString()};}
 function _roleCtx(){const _uid=S.uid;const _isAdmin=isAdmin();const _isSubAdmin=isSubAdmin();const _isMgr=isMgr();const _teamIds=(_isMgr&&!_isAdmin)?new Set([_uid,...subTree(_uid).map(u=>u.id)]):null;return{_uid,_isAdmin,_isSubAdmin,_isMgr,_teamIds};}
 // Apply helpers — shared by the startup bulk load AND the lazy per-tab loaders so the
@@ -943,7 +943,7 @@ async function loadFromSB(){
     if(uh.status==='fulfilled'&&!uh.value.error&&Array.isArray(uh.value.data)){
       const byId={};uh.value.data.forEach(r=>{if(r&&r.user_id&&r.hrm&&typeof r.hrm==='object')byId[r.user_id]=r.hrm;});
       DB.users.forEach(u=>{if(byId[u.id])u.hrm=byId[u.id];_ensureHrm(u);});
-      _bakeAllPerms(); // perms v2: snapshot any not-yet-baked user's effective access into toggles
+      _permsV3Migrate(); // perms v3: assign roles + translate legacy personal grants
     }
     // B2b: apply synced role profiles. Server is the source of truth for the shared set; merge over the
     //   local copy so an admin's edits (and the seeded built-ins) reach all devices. Re-seed afterward so
@@ -994,7 +994,7 @@ async function _sync(){try{
     //   WRITE is gated on isAdmin() — only the Super Admin edits Access Control (mirrors workspace_settings
     //   RLS write-elevated + M1 reference-table gating) so ordinary users never fire rejected upserts.
     //   READ happens for everyone in loadFromSB so each user's can() resolves against the latest profiles.
-    ((isAdmin()&&DB.roleProfiles&&Object.keys(DB.roleProfiles).length)?sb.from('workspace_settings').upsert({key:'role_profiles',value:DB.roleProfiles,updated_at:new Date().toISOString()},{onConflict:'key'}):Promise.resolve()),
+    ((can('accessControl','manage')&&DB.roleProfiles&&Object.keys(DB.roleProfiles).length)?sb.from('workspace_settings').upsert({key:'role_profiles',value:DB.roleProfiles,updated_at:new Date().toISOString()},{onConflict:'key'}):Promise.resolve()),
     // Shifts: only managers/HR/Admin author the roster — gate WRITE on can('scheduling','manage') so ordinary
     //   employees never fire RLS-rejected upserts (mirrors the role_profiles/SOP admin-gate). Push only the rows
     //   the caller may write under RLS (scoped/elevated) so a manager-of-team never gets rejected for foreign rows.
@@ -1237,7 +1237,7 @@ function loadDB(){
     if(!DB.hrmConfig||typeof DB.hrmConfig!=='object')DB.hrmConfig={};
     if(!DB.roleProfiles||typeof DB.roleProfiles!=='object')DB.roleProfiles={};
     _seedRoleProfiles(); // idempotent — seeds built-in basic/manager/admin presets (frontend-only)
-    try{_bakeAllPerms();}catch(e){console.warn('[perms] bake skipped:',e.message);} // perms v2 seeding
+    try{_permsV3Migrate();}catch(e){console.warn('[perms] migrate skipped:',e.message);} // perms v3
     // §4: HR email/notification prefs — DB-only key (FRONTEND-ONLY, never in workspace_settings/Supabase).
     DB.hrmNotifPrefs={..._hrmNotifPrefsDefault(),...(DB.hrmNotifPrefs&&typeof DB.hrmNotifPrefs==='object'?DB.hrmNotifPrefs:{})};
     DB.users.forEach(u=>{
@@ -1383,124 +1383,142 @@ const SCOPE_ORDER=['none','self','team','department','location','everyone'];
 const SCOPE_LABEL={none:'None',self:'Only their own',team:'Their team',department:'Their department',location:'Their office',everyone:'Everyone'};
 const _areaByKey=k=>PERM_AREAS.find(a=>a.key===k);
 
-// ── Seed built-in starting-point profiles (idempotent, like _seedProfiles) ──
+// ── Seed built-in roles (idempotent; version-stamped so v3 upgrades older seeds in place) ──
+// ROLES-FIRST MODEL (v3): Access Control creates ROLES (full toggle bundles); every user is
+// ASSIGNED one role (u.hrm.roleProfileId) and sees only what it grants. Per-user AREA OVERRIDES
+// (u.hrm.perms) sit on top for individual exceptions and beat the role — even for a Super Admin.
 function _seedRoleProfiles(){
   if(!DB.roleProfiles||typeof DB.roleProfiles!=='object')DB.roleProfiles={};
   const A=(scope,...acts)=>({scope,actions:acts.reduce((o,a)=>(o[a]=true,o),{})});
+  const allOf=(exceptAC)=>{const p={};PERM_AREAS.forEach(a=>{if(exceptAC&&a.key==='accessControl')return;p[a.key]={scope:a.scoped?'everyone':'none',actions:a.actions.reduce((o,act)=>(o[act]=true,o),{})};});return p;};
   const presets={
-    basic:{id:'basic',name:'Basic Employee',description:'A standard employee — sees their own data only. No reports, no exports.',builtin:true,perms:{
-      dashboard:A('none','view'),
-      attendance:A('self','view'),
-      leaveRequests:A('self','view','create'),
-      leaveBalances:A('self','view'),
-      scheduling:A('self','view'), // employees see their OWN published shifts
-      expenses:A('self','view','submit'), // employees submit + view their OWN claims (no approve)
-      hierarchy:A('self','view'),
-      checklists:A('self','view'),
-      tickets:A('self','view','create'),
-      documentsPersonal:A('self','view','create','download'),
-      announcements:A('none','view'), // view-only: company-wide announcements targeted to them (matches base-user behavior)
-      okr:A('none','view'), // employees can open OKRs (they see only their own level & below — okrVisible enforces that)
-    }},
-    manager:{id:'manager',name:'Team Lead',description:'A manager — sees and acts on their team. Can approve leave and view reports.',builtin:true,perms:{
+    superadmin:{id:'superadmin',name:'Super Admin',description:'Everything, including Access Control itself.',builtin:true,perms:allOf(false)},
+    admin:{id:'admin',name:'Administrator',description:'Full operational access across the whole organization — everything except Access Control.',builtin:true,perms:allOf(true)},
+    manager:{id:'manager',name:'Team Lead / Manager',description:'Sees and acts on their team: approvals, checklists, tickets, team OKRs, reports.',builtin:true,perms:{
       dashboard:A('none','view'),
       attendance:A('team','view','download'),
       leaveRequests:A('team','view','create','approve','download'),
       leaveBalances:A('team','view'),
-      employees:A('team','view'), // C2: managers view their team only — deactivate/assignManager/assignRole withheld (SubAdmin/Admin task today; toggle in Access Control to grant)
-      scheduling:A('team','view','manage'), // managers build & publish their team's roster
-      expenses:A('team','view','submit','approve'), // managers submit own + approve their team's claims
+      employees:A('team','view'),
+      teamview:A('none','view'),
       hierarchy:A('team','view'),
-      sops:A('team','view'), // managers see their direct reports' assigned-SOP progress (grant approve/manage in Access Control)
       checklists:A('team','view','create','edit','assign','approve'),
+      questions:A('none','view','manage'),
       tickets:A('team','view','create','manage'),
       documentsPersonal:A('self','view','create','download'),
       reports:A('none','view'),
-      announcements:A('none','view'), // view-only: company-wide announcements (matches base-user behavior)
-      okr:A('none','view','create','edit','manage'), // team leads create & manage OKRs for their team
+      announcements:A('none','view'),
+      approvals:A('none','view'),
+      okr:A('none','view','create','edit','manage'),
+      analytics:A('none','view'),
     }},
-    admin:{id:'admin',name:'Administrator',description:'Full operational access across the whole organization (mirrors Super Admin minus Access Control).',builtin:true,perms:{}},
+    hr:{id:'hr',name:'HR',description:'The HR modules: attendance, leave & balances, HR settings, HRM analytics, document approvals.',builtin:true,perms:{
+      dashboard:A('none','view'),
+      attendance:A('everyone','view','edit','download'),
+      leaveRequests:A('everyone','view','create','approve','download'),
+      leaveBalances:A('everyone','view','edit','grant'),
+      hrSettings:A('none','view','edit'),
+      employees:A('everyone','view'),
+      hierarchy:A('everyone','view'),
+      checklists:A('self','view'),
+      tickets:A('self','view','create'),
+      documentsOrg:A('everyone','view','approve'),
+      documentsPersonal:A('self','view','create','download'),
+      reports:A('none','view','download'),
+      announcements:A('none','view','create'),
+      approvals:A('none','view'),
+      okr:A('none','view'),
+    }},
+    basic:{id:'basic',name:'Basic Employee',description:'A standard employee — their own checklists, attendance, leave and tickets.',builtin:true,perms:{
+      dashboard:A('none','view'),
+      attendance:A('self','view'),
+      leaveRequests:A('self','view','create'),
+      leaveBalances:A('self','view'),
+      hierarchy:A('self','view'),
+      checklists:A('self','view'),
+      tickets:A('self','view','create'),
+      documentsPersonal:A('self','view','create','download'),
+      announcements:A('none','view'),
+      okr:A('none','view'),
+    }},
   };
-  // admin preset = everyone-scope + all actions on every area except Access Control.
-  PERM_AREAS.forEach(a=>{if(a.key==='accessControl')return;presets.admin.perms[a.key]={scope:a.scoped?'everyone':'none',actions:a.actions.reduce((o,act)=>(o[act]=true,o),{})};});
-  Object.values(presets).forEach(p=>{if(!DB.roleProfiles[p.id])DB.roleProfiles[p.id]=p;});
+  const V='3';
+  Object.values(presets).forEach(p=>{
+    const cur=DB.roleProfiles[p.id];
+    if(!cur||(cur.builtin&&cur._v!==V)){p._v=V;DB.roleProfiles[p.id]=p;} // upgrade built-ins once; never touch custom roles
+  });
 }
 
-// ── Resolver v2 (fully toggle-driven) ──
-// Priority: 1) the user's OWN per-user toggle map (u.hrm.perms — set in Access Control; beats
-// everything, even the Super Admin role) → 2) Super Admin default-all → 3) HR floor → 4) assigned
-// role profile → 5) base-role shim. At boot _bakeAllPerms() snapshots every user's CURRENT
-// effective access into u.hrm.perms, so behavior is identical until someone flips a toggle.
+// ── Resolver v3 (roles-first, fully toggle-driven) ──
+// Priority: 1) per-user AREA OVERRIDE (u.hrm.perms — beats everything, even Super Admin)
+//           2) ASSIGNED ROLE (u.hrm.roleProfileId → DB.roleProfiles)
+//           3) legacy fallbacks for anyone not yet migrated (Admin default-all, HR floor, base shim).
 function _myProfile(){const u=me();if(!u)return null;const id=u.hrm?.roleProfileId;return id?(DB.roleProfiles?.[id]||null):null;}
+function _roleOf(u){const id=u&&u.hrm&&u.hrm.roleProfileId;return id?(DB.roleProfiles?.[id]||null):null;}
 function _userPermArea(u,area){const p=u&&u.hrm&&u.hrm.perms;return(p&&typeof p==='object'&&p[area]&&typeof p[area]==='object')?p[area]:null;}
 function can(area,action){
   const u=me();if(!u)return false;
   const o=_userPermArea(u,area);
   if(o)return !!(o.actions&&o.actions[action]);
+  const rp=_roleOf(u);
+  if(rp)return !!(rp.perms&&rp.perms[area]&&rp.perms[area].actions&&rp.perms[area].actions[action]);
   if(isAdmin())return true;
   if(_hrFloor(area,action))return true;
-  const p=_myProfile();
-  if(p){const a=p.perms?.[area];return !!(a&&a.actions&&a.actions[action]);}
   return _baseCan(area,action);
 }
-// Evaluate `can` for ANOTHER user (used by the Access Control editor + lockout guard).
+// Evaluate for ANOTHER user (Access Control editor + lockout guard).
 function canUser(u,area,action){
   if(!u)return false;
   const o=_userPermArea(u,area);
   if(o)return !!(o.actions&&o.actions[action]);
-  if(u.role==='Admin')return true;
-  return false; // unbaked non-admin: resolved live only for self; editor bakes before editing
+  const rp=_roleOf(u);
+  if(rp)return !!(rp.perms&&rp.perms[area]&&rp.perms[area].actions&&rp.perms[area].actions[action]);
+  return u.role==='Admin';
 }
-/* ── One-time seeding: bake every user's CURRENT effective access into explicit per-user
-   toggles (u.hrm.perms). Impersonates each user through the legacy resolver so the result is
-   byte-for-byte today's behavior. Idempotent via u.hrm.permsBaked. Rides the user_hrm sync. ── */
-function _effPermsFor(u){
-  const prev=S.uid;S.uid=u.id;
-  const out={};
-  try{
-    PERM_AREAS.forEach(a=>{
-      if(a.key==='okr'&&!(isAdmin()||isSubAdmin()||isMgr()))return; // stays live: employee OKR view is ownership-based (data loads async)
-      const acts={};a.actions.forEach(act=>{
-        let v;
-        if(a.key==='teamview')v=isAdmin()||isSubAdmin()||isMgr();
-        else if(a.key==='allChecklists')v=isAdmin()||isSubAdmin();
-        else if(a.key==='approvals')v=isAdmin()||isSubAdmin()||isMgr()||can('leaveRequests','approve')||can('checklists','approve')||can('documentsOrg','approve');
-        else v=can(a.key,act);
-        acts[act]=!!v;
-      });
-      out[a.key]={scope:a.scoped?scopeOf(a.key):'none',actions:acts};
-    });
-  }finally{S.uid=prev;}
-  return out;
-}
-function _bakeAllPerms(){
-  let n=0;
-  (DB.users||[]).forEach(u=>{
-    if(!u||!u.status)return;
-    _ensureHrm(u);
-    if(u.hrm.permsBaked)return;
-    u.hrm.perms=_effPermsFor(u);
-    u.hrm.permsBaked=1;n++;
-  });
-  if(n){console.log('[perms] baked',n,'user(s)');saveDB();}
-}
-// Re-bake ONE user from their (possibly new) base role — used when a role changes or on "Reset".
-function _rebakeUser(u){if(!u)return;_ensureHrm(u);u.hrm.perms=null;u.hrm.permsBaked=0;u.hrm.perms=_effPermsFor(u);u.hrm.permsBaked=1;}
-// Lockout guard: would ANY active user still hold accessControl.<action> if `uid2` loses it?
+// Lockout guard: would ANY other active user still hold accessControl.<action> if `uid2` loses it?
 function _acLockoutSafe(uid2,action){
   return (DB.users||[]).some(x=>x.id!==uid2&&x.status==='Active'&&canUser(x,'accessControl',action));
 }
-// HR-role floor: the minimum HR perms an isHR user always retains regardless of role profile.
+// Which built-in role matches a user's legacy standing? (migration + base-role changes)
+function _roleIdForUser(u){
+  if(u.role==='Admin')return 'superadmin';
+  if(u.role==='SubAdmin')return 'admin';
+  if(u.hrm&&u.hrm.isHR===true)return 'hr';
+  if((DB.users||[]).some(x=>x.managerId===u.id&&x.id!==u.id))return 'manager';
+  return 'basic';
+}
+/* ── One-time v3 migration: assign everyone a ROLE from their current standing, translate the old
+   personal grants (questionsAccess / docAccess) into small per-user overrides, and clear the v2
+   full baked maps so the ROLE is what drives access from now on. Idempotent via u.hrm.permsV3. ── */
+function _permsV3Migrate(){
+  let n=0;
+  (DB.users||[]).forEach(u=>{
+    if(!u)return;_ensureHrm(u);
+    if(u.hrm.permsV3)return;
+    if(!u.hrm.roleProfileId||!DB.roleProfiles[u.hrm.roleProfileId])u.hrm.roleProfileId=_roleIdForUser(u);
+    const ov={};
+    if(u.questionsAccess&&u.hrm.roleProfileId==='basic')ov.questions={scope:'none',actions:{view:true,manage:false}};
+    const da=u.docAccess||{};
+    const anyDept=Object.values(da.departments||{}).some(p=>p&&p.view);
+    const anyLoc=Object.values(da.locations||{}).some(p=>p&&p.view);
+    if((anyDept||anyLoc)&&['basic','manager','hr'].includes(u.hrm.roleProfileId)){
+      ov.documentsOrg={scope:'everyone',actions:{view:true,create:true,download:true,delete:false,approve:u.hrm.roleProfileId==='hr'}};
+      if(anyDept)ov.departments={scope:'none',actions:{view:true,create:false,edit:false}};
+      if(anyLoc)ov.locations={scope:'none',actions:{view:true,create:false,edit:false,manage:false}};
+    }
+    u.hrm.perms=Object.keys(ov).length?ov:null; // clear v2 baked map — the role drives now
+    u.hrm.permsBaked=1;u.hrm.permsV3=1;n++;
+  });
+  if(n){console.log('[perms] v3 roles assigned to',n,'user(s)');saveDB();}
+}
+// HR-role floor — legacy fallback for users with NO assigned role (pre-migration edge only).
 function _hrFloor(area,action){
   if(!isHR())return false;
   if(area==='leaveBalances')return action==='view'||action==='edit'||action==='grant';
   if(area==='hrSettings')return action==='view'||action==='edit';
   if(area==='leaveRequests')return action==='view'||action==='approve';
   if(area==='attendance')return action==='view'||action==='edit';
-  if(area==='documentsOrg')return action==='approve'; // HR can approve org-doc submissions by default
-  if(area==='sops')return action==='view'||action==='manage'||action==='approve'; // HR owns SOPs by default
-  if(area==='scheduling')return action==='view'||action==='manage'; // HR builds/publishes the roster by default
-  if(area==='expenses')return action==='view'||action==='submit'||action==='approve'; // HR approves expense claims by default
+  if(area==='documentsOrg')return action==='approve';
   return false;
 }
 // scopeOf(area) → 'none'|'self'|'team'|'department'|'location'|'everyone'
@@ -1508,28 +1526,25 @@ function scopeOf(area){
   const u=me();if(!u)return 'none';
   const o=_userPermArea(u,area);
   if(o)return o.scope||'none';
+  const rp=_roleOf(u);
+  if(rp){const a=rp.perms&&rp.perms[area];return a?(a.scope||'none'):'none';}
   if(isAdmin())return 'everyone';
-  const p=_myProfile();
-  if(p){const a=p.perms?.[area];return a?(a.scope||'none'):'none';}
   return _baseScope(area);
 }
 // scopeFilter(area) → predicate(userId)=>bool ("can I see this person under <area>'s scope").
-// Reuses subTree (team), u.department (department), u.hrm.locationId (location) so it matches today's data filters.
 function scopeFilter(area){
   const sc=scopeOf(area),myId=S.uid,u=me();
   if(sc==='none')return ()=>false;
-  if(sc==='everyone')return id=>{const t=uById(id);return !!t&&(t.role!=='Admin'||isAdmin());}; // keep Super Admin out of people-lists for non-admins
+  if(sc==='everyone')return id=>{const t=uById(id);return !!t&&(t.role!=='Admin'||isAdmin());};
   if(sc==='self')return id=>id===myId;
   if(sc==='team'){const set=new Set([myId,...subTree(myId).map(x=>x.id)]);return id=>set.has(id);}
   if(sc==='department'){const d=u?.department;return id=>!!d&&uById(id)?.department===d;}
   if(sc==='location'){const l=u?.hrm?.locationId;return id=>!!l&&uById(id)?.hrm?.locationId===l;}
   return ()=>false;
 }
-// Convenience: list of users visible to the current user for an area.
 function scopedUsers(area){const f=scopeFilter(area);return DB.users.filter(u=>f(u.id));}
 
-// ── Back-compat shim: reproduce TODAY's exact access for an UNASSIGNED user. ──
-// Super Admin is already handled (returns true) in can()/scopeOf() before these run.
+// ── Legacy base-role shim (only reachable for users with NO role assigned — pre-migration) ──
 const _canReportLegacy=()=>{const p=me()?.hrm?.reportPerms||{};return Object.values(p).some(Boolean);};
 function _baseCan(area,action){
   const sub=isSubAdmin(),mgr=isMgr(),hr=isHR(),q=!!me()?.questionsAccess,doc=hasDocAccess();
@@ -1540,41 +1555,35 @@ function _baseCan(area,action){
     case 'leaveBalances':return action==='view'?(sub||mgr||hr):((action==='grant'||action==='edit')?hr:false);
     case 'hrSettings':return hr;
     case 'employees':
-      // C2: deactivate/assignManager/assignRole are sensitive sub-actions of editing a user.
-      //   They ran today under employees.edit (SubAdmin via this shim, Super Admin via isAdmin()).
-      //   Keep that exact floor so no existing user loses access; assignRole stays admin-only (it
-      //   grants permission bundles) to avoid privilege escalation by a SubAdmin.
       if(action==='deactivate'||action==='assignManager')return sub;
-      if(action==='assignRole')return false; /* Super Admin only (isAdmin() short-circuits) */
-      return action==='view'?(sub||mgr):sub; /* create/edit/delete today = Super Admin only → handled by isAdmin() in can() */
+      if(action==='assignRole')return false;
+      return action==='view'?(sub||mgr):sub;
     case 'hierarchy':return true;
-    case 'scheduling':return action==='view'?true:(sub||mgr||hr); // retired feature; kept only for the (now inert) shifts sync gate
+    case 'scheduling':return action==='view'?true:(sub||mgr||hr);
     case 'checklists':return action==='view'?true:(sub||mgr);
-    case 'analytics':return (sub||mgr||hr); // operational analytics dashboard — managers/HR/SubAdmin by default
+    case 'analytics':return (sub||mgr||hr);
     case 'questions':return q||sub;
-    case 'tickets':return action==='manage'?(sub||mgr):true; /* create/view=everyone; manage/resolve historically requires SubAdmin or Manager (per-ticket subtree/assignee still enforced in the ticket UI) */
-    case 'documentsOrg':return action==='approve'?hr:doc; /* approve = HR/Admin only by default; grant to others in Access Control */
-    case 'documentsPersonal':return true; /* own */
+    case 'tickets':return action==='manage'?(sub||mgr):true;
+    case 'documentsOrg':return action==='approve'?hr:doc;
+    case 'documentsPersonal':return true;
     case 'reports':return (action==='download')?(hr||_canReportLegacy()):(hr||mgr||_canReportLegacy());
     case 'announcements':return action==='view'?true:hr;
-    case 'locations':return action==='view'?doc:false; /* create/edit/manage today = Super Admin only → handled by isAdmin() in can() */
+    case 'locations':return action==='view'?doc:false;
     case 'departments':return doc;
     case 'teamview':return sub||mgr;
     case 'allChecklists':return sub;
     case 'approvals':return sub||mgr||hr;
-    case 'audit':return false; /* Super Admin only today via nav */
-    case 'settings':return false; /* Super Admin only today */
-    case 'accessControl':return false; /* Super Admin only */
+    case 'audit':return false;
+    case 'settings':return false;
+    case 'accessControl':return false;
     case 'okr':
-      // Preserve today's behavior: managers/sub-admins manage OKRs; a plain employee who OWNS an
-      // OKR can view it. Super Admin already short-circuited in can().
       if(action==='view')return sub||mgr||(DB.okrs||[]).some(o=>o.ownerId===S.uid);
-      return sub||mgr; /* create / edit / manage */
+      return sub||mgr;
   }
   return false;
 }
 function _baseScope(area){
-  if(area==='employees')return 'team'; // preserve legacy visU(): Super Admin → everyone upstream; all others → self+subtree
+  if(area==='employees')return 'team';
   if(isSubAdmin())return 'everyone';
   if(isHR()&&['attendance','leaveRequests','leaveBalances','reports','scheduling','expenses'].includes(area))return 'everyone';
   if(isMgr())return 'team';
@@ -2095,18 +2104,20 @@ function okrPage(){
     </div>`:'';
   // ── Filters (department / owner / status / level / search) ──
   const F=S.filters;
-  const fActive=!!(F.okrDept||F.okrOwner||F.okrStatus||F.okrLvl||F.okrQ);
+  const fActive=!!(F.okrDept||F.okrSub||F.okrOwner||F.okrStatus||F.okrLvl||F.okrQ);
   const deptIds=[...new Set(vis.map(o=>okrRootOf(o).departmentId).filter(Boolean))];
+  const subIds=F.okrDept?[...new Set(vis.map(o=>okrRootOf(o)).filter(r=>r.departmentId===F.okrDept&&r.subDepartmentId).map(r=>r.subDepartmentId))]:[];
   const ownerIds=[...new Set(vis.map(o=>o.ownerId).filter(Boolean))];
   const maxLvl=vis.reduce((m,o)=>Math.max(m,okrLevel(o)),0);
   const selSt='font-size:12px;padding:6px 26px 6px 10px;min-height:0;height:32px;width:auto';
   const fBar=vis.length?`<div class="ui-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin-bottom:14px">
       <input id="okr-q" value="${esc(F.okrQ||'')}" oninput="S.filters.okrQ=this.value;App._searchRR('okr-q')" placeholder="Search objectives…" class="ui-input" style="flex:1;min-width:150px;height:32px;min-height:0;padding:4px 12px;font-size:12.5px"/>
-      <select onchange="S.filters.okrDept=this.value;rr()" class="ui-select" style="${selSt}"><option value="">All departments</option>${deptIds.map(id=>{const d=(DB.departments||[]).find(x=>x.id===id);return`<option value="${id}" ${F.okrDept===id?'selected':''}>${esc(d?d.name:id)}</option>`;}).join('')}</select>
+      <select onchange="S.filters.okrDept=this.value;S.filters.okrSub='';rr()" class="ui-select" style="${selSt}"><option value="">All departments</option>${deptIds.map(id=>{const d=(DB.departments||[]).find(x=>x.id===id);return`<option value="${id}" ${F.okrDept===id?'selected':''}>${esc(d?d.name:id)}</option>`;}).join('')}</select>
+      ${subIds.length?`<select onchange="S.filters.okrSub=this.value;rr()" class="ui-select" style="${selSt}"><option value="">All sub-departments</option>${subIds.map(id=>{const d=(DB.departments||[]).find(x=>x.id===id);return`<option value="${id}" ${F.okrSub===id?'selected':''}>${esc(d?d.name:id)}</option>`;}).join('')}</select>`:''}
       <select onchange="S.filters.okrOwner=this.value;rr()" class="ui-select" style="${selSt}"><option value="">All owners</option>${ownerIds.map(id=>{const u2=uById(id);return`<option value="${id}" ${F.okrOwner===id?'selected':''}>${esc(u2?fullName(u2):id)}</option>`;}).join('')}</select>
       <select onchange="S.filters.okrStatus=this.value;rr()" class="ui-select" style="${selSt}"><option value="">Any status</option>${['Achieved','On track','Off track','Not achieved','No data'].map(s=>`<option ${F.okrStatus===s?'selected':''}>${s}</option>`).join('')}</select>
       <select onchange="S.filters.okrLvl=this.value;rr()" class="ui-select" style="${selSt}"><option value="">Any level</option>${Array.from({length:maxLvl+1},(_,i)=>`<option value="${i}" ${F.okrLvl===String(i)?'selected':''}>L${i}</option>`).join('')}</select>
-      ${fActive?`<button onclick="S.filters.okrQ='';S.filters.okrDept='';S.filters.okrOwner='';S.filters.okrStatus='';S.filters.okrLvl='';rr()" class="ui-btn ui-btn-ghost ui-btn-sm">Clear</button>`:''}
+      ${fActive?`<button onclick="S.filters.okrQ='';S.filters.okrDept='';S.filters.okrSub='';S.filters.okrOwner='';S.filters.okrStatus='';S.filters.okrLvl='';rr()" class="ui-btn ui-btn-ghost ui-btn-sm">Clear</button>`:''}
     </div>`:'';
   // ── Tree (or a flat filtered list when any filter is on) ──
   let tree;
@@ -2114,6 +2125,7 @@ function okrPage(){
     const q=(F.okrQ||'').toLowerCase();
     const hits=vis.filter(o=>{
       if(F.okrDept&&okrRootOf(o).departmentId!==F.okrDept)return false;
+      if(F.okrSub&&okrRootOf(o).subDepartmentId!==F.okrSub)return false;
       if(F.okrOwner&&o.ownerId!==F.okrOwner)return false;
       if(F.okrStatus&&okrStatusOf(o)!==F.okrStatus)return false;
       if(F.okrLvl!==''&&F.okrLvl!==undefined&&okrLevel(o)!==Number(F.okrLvl))return false;
@@ -2141,6 +2153,7 @@ function _okrNodeHTML(o,depth){
   const barC=_okrBarColor(st);
   const owner=uById(o.ownerId);
   const dept=(DB.departments||[]).find(d=>d.id===o.departmentId);
+  const subDept=(DB.departments||[]).find(d=>d.id===o.subDepartmentId);
   const canEdit=_okrCanEditNode(o),canCk=_okrCanCheckin(o),canCreate=_okrCanCreate();
   const icBtn='width:28px;height:28px;display:grid;place-items:center;border-radius:8px;color:var(--c-text-3);background:transparent;border:none;cursor:pointer;flex-shrink:0';
   const meta='font-size:11.5px;color:var(--c-text-2);display:inline-flex;align-items:center;gap:4px';
@@ -2154,7 +2167,7 @@ function _okrNodeHTML(o,depth){
           <div class="fd" style="font-size:14.5px;font-weight:800;color:var(--c-text);line-height:1.25">${esc(o.title||'Untitled')}</div>
           <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">
             ${owner?`<span style="${meta}">${avatar(owner,'w-4 h-4','text-[8px]')}${esc(fullName(owner))}</span>`:''}
-            ${dept?`<span style="${meta}">${ic('dept','w-3 h-3')}${esc(dept.name)}</span>`:''}
+            ${dept?`<span style="${meta}">${ic('dept','w-3 h-3')}${esc(dept.name)}${subDept?' › '+esc(subDept.name):''}</span>`:''}
             <span style="${meta}">${ic('clock','w-3 h-3')}${esc(_okrFreqLabel(o))}</span>
             ${o.periodStart||o.periodEnd?`<span style="${meta}">${ic('doc','w-3 h-3')}${fmtS(o.periodStart)} → ${fmtS(o.periodEnd)}</span>`:''}
             ${kids.length?`<span style="${meta}">${ic('tree','w-3 h-3')}${kids.length} sub-objective${kids.length===1?'':'s'}</span>`:''}
@@ -2185,6 +2198,7 @@ function _okrNodeHTML(o,depth){
 function _okrRulesPanel(o){
   const owner=uById(o.ownerId),creator=uById(o.createdBy);
   const dept=(DB.departments||[]).find(d=>d.id===o.departmentId);
+  const subDept=(DB.departments||[]).find(d=>d.id===o.subDepartmentId);
   const kids=okrChildren(o.id);
   const mLabel=(OKR_METRICS.find(m=>m[0]===o.metricType)||['','Number'])[1];
   const row=(l,v)=>`<div style="display:flex;flex-direction:column;gap:2px;min-width:130px"><span style="font-size:10px;font-weight:700;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">${l}</span><span style="font-size:13px;font-weight:600;color:var(--c-text)">${v}</span></div>`;
@@ -2198,6 +2212,7 @@ function _okrRulesPanel(o){
       ${row('Period',(o.periodStart||o.periodEnd)?(fmtS(o.periodStart)+' → '+fmtS(o.periodEnd)):'Ongoing')}
       ${row('Owner',owner?esc(fullName(owner)):'—')}
       ${dept?row('Department',esc(dept.name)):''}
+      ${subDept?row('Sub-department',esc(subDept.name)):''}
       ${kids.length?row('Progress source','Average of '+kids.length+' sub-objective'+(kids.length===1?'':'s')):row('Progress source','Own check-ins')}
       ${row('Status',o.statusMode==='manual'?('Marked manually ('+esc(o.statusManual||'—')+')'):'Automatic')}
       ${creator?row('Created by',esc(fullName(creator))+(o.createdAt?' · '+fmtS(String(o.createdAt).slice(0,10)):'')):''}
@@ -2293,7 +2308,7 @@ App._okrEdit=(id,parentId)=>{
   const existing=id?okrById(id):null;
   if(existing&&!_okrCanEditNode(existing))return toast('You can\'t edit this OKR','err');
   if(!existing&&!_okrCanCreate())return toast('You can\'t create OKRs','err');
-  _OKRED=existing?JSON.parse(JSON.stringify(existing)):{id:uid('okr'),parentId:parentId||null,title:'',description:'',departmentId:null,ownerId:S.uid,metricType:'number',startValue:0,targetValue:null,unit:'',direction:'up',frequency:{type:'weekly',day:'Mon'},periodStart:null,periodEnd:null,statusMode:'auto',statusManual:null,sort:okrChildren(parentId||null).length,createdBy:S.uid,createdAt:new Date().toISOString()};
+  _OKRED=existing?JSON.parse(JSON.stringify(existing)):{id:uid('okr'),parentId:parentId||null,title:'',description:'',departmentId:null,subDepartmentId:null,ownerId:S.uid,metricType:'number',startValue:0,targetValue:null,unit:'',direction:'up',frequency:{type:'weekly',day:'Mon'},periodStart:null,periodEnd:null,statusMode:'auto',statusManual:null,sort:okrChildren(parentId||null).length,createdBy:S.uid,createdAt:new Date().toISOString()};
   App._renderOKREdit();
 };
 App._okrEdSetFreqType=(t)=>{const o=_OKRED;if(!o)return;if(t==='none')o.frequency={};else if(t==='weekly')o.frequency={type:'weekly',day:(o.frequency||{}).day&&WKDAYS.includes(o.frequency.day)?o.frequency.day:'Mon'};else if(t==='monthly')o.frequency={type:'monthly',day:Number((o.frequency||{}).day)||1};else o.frequency={type:'custom',dates:Array.isArray((o.frequency||{}).dates)?o.frequency.dates:[]};App._renderOKREdit();};
@@ -2308,14 +2323,18 @@ App._renderOKREdit=()=>{
   const users=visU().filter(u=>u&&u.status==='Active');
   const f=o.frequency||{};
   const fType=f.type||'none';
-  // department options: top-level departments plus indented sub-departments
-  const deptOpts=(()=>{try{const out=[];(topDepts()||[]).forEach(d=>{out.push([d.id,d.name]);(subDepts(d.id)||[]).forEach(s=>out.push([s.id,'— '+s.name]));});return out.length?out:(DB.departments||[]).map(d=>[d.id,d.name]);}catch(e){return(DB.departments||[]).map(d=>[d.id,d.name]);}})();
+  // Department (top level) + separate Sub-department select (children of the chosen department)
+  const deptOpts=(topDepts()||[]).map(d=>[d.id,d.name]);
+  const subOpts=o.departmentId?(subDepts(o.departmentId)||[]).map(s=>[s.id,s.name]):[];
   const dayChip=d=>`<button type="button" onclick="_OKRED.frequency.day='${d}';App._renderOKREdit()" style="padding:6px 11px;border-radius:9px;border:1.5px solid ${f.day===d?'var(--c-text)':'var(--c-border)'};background:${f.day===d?'var(--c-ink)':'var(--c-surface)'};color:${f.day===d?'#fff':'var(--c-text-2)'};font-size:12px;font-weight:700;cursor:pointer">${d}</button>`;
   modalShell({title:(isExisting?'Edit':'New')+' L'+lvl+' objective',sub:parent?('Under: '+(parent.title||'—')):('Top-level objective — assigned to a department'),size:'max-w-lg',
     body:`<div style="display:flex;flex-direction:column;gap:14px">
       <div><label style="${L}">Objective title *</label><input type="text" value="${esc(o.title||'')}" oninput="_OKRED.title=this.value" placeholder="e.g. Increase monthly revenue" class="ui-input rf"/></div>
       <div><label style="${L}">Goal / description</label><textarea rows="2" oninput="_OKRED.description=this.value" placeholder="What does success look like? Why does it matter?" class="ui-input rf" style="resize:vertical">${esc(o.description||'')}</textarea></div>
-      ${!o.parentId?`<div><label style="${L}">Department *</label><select class="ui-select rf" onchange="_OKRED.departmentId=this.value||null"><option value="">— Select department —</option>${deptOpts.map(d=>`<option value="${esc(d[0])}" ${o.departmentId===d[0]?'selected':''}>${esc(d[1])}</option>`).join('')}</select></div>`:''}
+      ${!o.parentId?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label style="${L}">Department *</label><select class="ui-select rf" onchange="_OKRED.departmentId=this.value||null;_OKRED.subDepartmentId=null;App._renderOKREdit()"><option value="">— Select department —</option>${deptOpts.map(d=>`<option value="${esc(d[0])}" ${o.departmentId===d[0]?'selected':''}>${esc(d[1])}</option>`).join('')}</select></div>
+        <div><label style="${L}">Sub-department</label><select class="ui-select rf" ${subOpts.length?'':'disabled'} onchange="_OKRED.subDepartmentId=this.value||null"><option value="">${subOpts.length?'— All / none —':'No sub-departments'}</option>${subOpts.map(s=>`<option value="${esc(s[0])}" ${o.subDepartmentId===s[0]?'selected':''}>${esc(s[1])}</option>`).join('')}</select></div>
+      </div>`:''}
       <div><label style="${L}">Owner (does the check-ins) *</label><select class="ui-select rf" onchange="_OKRED.ownerId=this.value||null"><option value="">— Select owner —</option>${users.map(u=>`<option value="${u.id}" ${o.ownerId===u.id?'selected':''}>${esc(fullName(u))}</option>`).join('')}</select></div>
       <div style="border-top:1px dashed var(--c-border);padding-top:12px"><label style="${L}">Rules & target — how is this measured?</label>
         <select class="ui-select rf" onchange="_OKRED.metricType=this.value;App._renderOKREdit()">${OKR_METRICS.map(m=>`<option value="${m[0]}" ${o.metricType===m[0]?'selected':''}>${m[1]}</option>`).join('')}</select>
@@ -2364,12 +2383,12 @@ App._okrSave=()=>{
   const idx=(DB.okrs||[]).findIndex(x=>x.id===o.id);
   if(idx>-1){
     const prev=DB.okrs[idx];
-    const fields=[['title','Title'],['description','Goal'],['departmentId','Department'],['ownerId','Owner'],['metricType','Metric'],['startValue','Start value'],['targetValue','Target'],['unit','Unit'],['direction','Direction'],['periodStart','Period start'],['periodEnd','Period end']];
+    const fields=[['title','Title'],['description','Goal'],['departmentId','Department'],['subDepartmentId','Sub-department'],['ownerId','Owner'],['metricType','Metric'],['startValue','Start value'],['targetValue','Target'],['unit','Unit'],['direction','Direction'],['periodStart','Period start'],['periodEnd','Period end']];
     const changes=[];
     fields.forEach(([k,label])=>{const a=prev[k],b=o[k];if(String(a===null||a===undefined?'':a)!==String(b===null||b===undefined?'':b)){
       let from=a,to=b;
       if(k==='ownerId'){const ua=uById(a),ub=uById(b);from=ua?fullName(ua):a;to=ub?fullName(ub):b;}
-      if(k==='departmentId'){const da=(DB.departments||[]).find(d=>d.id===a),db2=(DB.departments||[]).find(d=>d.id===b);from=da?da.name:a;to=db2?db2.name:b;}
+      if(k==='departmentId'||k==='subDepartmentId'){const da=(DB.departments||[]).find(d=>d.id===a),db2=(DB.departments||[]).find(d=>d.id===b);from=da?da.name:(a||'—');to=db2?db2.name:(b||'—');}
       changes.push({field:label,from:from,to:to});
     }});
     if(JSON.stringify(prev.frequency||{})!==JSON.stringify(o.frequency||{}))changes.push({field:'Frequency',from:_okrFreqLabel(prev),to:_okrFreqLabel(o)});
@@ -3128,9 +3147,9 @@ App.saveUser=async(id)=>{
       rules,approval:approval_settings,
       questionsAccess,emailEnabled:email_enabled,cities,
       docAccess,hrm});
-    // perms v2: a role change re-bakes this user's toggle map from the NEW role's defaults
-    // (their old per-person tweaks are replaced — adjust afterwards in Access Control).
-    if(_roleChanged&&u){_rebakeUser(u);log(fullName(me()),'Access re-baked (role change)',fn+' '+ln+' → '+pd.role);}
+    // perms v3: a base-role change assigns the matching built-in access ROLE and clears
+    // per-user overrides (fine-tune afterwards in Access Control).
+    if(_roleChanged&&u){_ensureHrm(u);u.hrm.roleProfileId=_roleIdForUser(u);u.hrm.perms=null;u.hrm.permsV3=1;log(fullName(me()),'Access role assigned (base-role change)',fn+' '+ln+' → '+u.hrm.roleProfileId);}
     log(fullName(me()),'Edited user',fn+' '+ln);
     toast('Saved');closeModal();saveDB();render();
     // Sync all fields including doc_access to Supabase in background
@@ -3158,7 +3177,7 @@ App.saveUser=async(id)=>{
       rules:pd.rules,approval:pd.approval_settings,
       questionsAccess,emailEnabled:email_enabled,cities,
       docAccess,hrm,password:'***'}));
-    _rebakeUser(uById(newId)); // perms v2: seed the new user's toggles from their role defaults
+    (()=>{const nu=uById(newId);if(nu){_ensureHrm(nu);nu.hrm.roleProfileId=_roleIdForUser(nu);nu.hrm.permsV3=1;}})(); // perms v3: assign role
     // Save doc_access + questions_access + email/cities for new user
     sb.from('profiles').update({doc_access:docAccess,questions_access:questionsAccess,email_enabled,cities}).eq('id',newId).then(()=>{}).catch(()=>{});
     log(fullName(me()),'Created user',fn+' '+ln);
@@ -4762,10 +4781,12 @@ App._sendReq=(clId,date)=>{
 function teamViewPage(){
   // If no user selected → show team member picker
   if(!S.tvUser){
-    // Managers see DIRECT reports only, not the full recursive tree
+    // Managers see DIRECT reports only; admins (and anyone whose employees-scope is org-wide)
+    // see everyone. Never silently render My Checklists here — that read as a bug.
     const directReports=DB.users.filter(u=>u.managerId===S.uid&&u.id!==S.uid);
-    const team=isAdmin()?subTree(S.uid):directReports;
-    if(!team.length)return myClsPage();
+    const orgWide=isAdmin()||isSubAdmin()||scopeOf('employees')==='everyone';
+    const team=orgWide?DB.users.filter(u=>u.id!==S.uid&&u.status==='Active'&&u.role!=='Admin'):directReports;
+    if(!team.length)return`<div class="fade">${hdr('Team','Live checklist status of your team')}${empty('users','No team members yet','Nobody reports to you. Ask an admin to set you as someone\'s manager in Users, or check Access Control → Team view.')}</div>`;
     return`<div class="fade">
       ${hdr('Team','Select a team member to view their checklists')}
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
@@ -7427,8 +7448,56 @@ App._hrmDrill=(uid)=>{
 /* ===== AUDIT / NOTIF / PROFILE / SETTINGS ===== */
 
 function auditPage(){
-  const rows=(DB.audit||[]).map(l=>`<div style="display:flex;align-items:center;gap:11px;padding:12px 16px;border-bottom:1px solid var(--c-border);font-size:14px"><span style="width:7px;height:7px;border-radius:99px;background:var(--c-brand);flex-shrink:0"></span><div style="flex:1;min-width:0"><span style="font-weight:700;color:var(--c-text)">${esc(l.actor)}</span> <span style="color:var(--c-text-2)">${esc(l.action.toLowerCase())}</span>${l.target?` <span style="font-weight:600;color:var(--c-text)">${esc(l.target)}</span>`:''}</div><span style="font-size:11px;color:var(--c-text-3);flex-shrink:0">${new Date(l.time).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div>`).join('');
-  return`<div class="fade">${hdr('Audit Logs','Every action taken in the workspace')}${(DB.audit||[]).length?card(`<div style="max-height:70vh;overflow-y:auto">${rows}</div>`,{pad:false}):card(empty('audit','No logs yet','Actions will appear here as people use the app.'),{pad:false})}</div>`;
+  // v2: filterable — by person (actor), department (actor's), and tab/category (derived from the action text).
+  const F=S.filters;
+  const cat=l=>{const s2=((l.action||'')+' '+(l.target||'')).toLowerCase();
+    if(s2.includes('okr'))return 'OKRs';
+    if(s2.includes('checklist')||s2.includes('submission'))return 'Checklists';
+    if(s2.includes('leave')||s2.includes('comp-off'))return 'Leave';
+    if(s2.includes('attendance')||s2.includes('clock'))return 'Attendance';
+    if(s2.includes('access')||s2.includes('role'))return 'Access Control';
+    if(s2.includes('user')||s2.includes('password'))return 'Users';
+    if(s2.includes('ticket'))return 'Tickets';
+    if(s2.includes('question'))return 'Questions';
+    if(s2.includes('document')||s2.includes('folder'))return 'Documents';
+    if(s2.includes('department'))return 'Departments';
+    if(s2.includes('location'))return 'Locations';
+    if(s2.includes('announcement'))return 'Announcements';
+    if(s2.includes('setting'))return 'Settings';
+    return 'Other';};
+  const all=DB.audit||[];
+  const actors=[...new Set(all.map(l=>l.actor).filter(Boolean))].sort();
+  const cats=[...new Set(all.map(cat))].sort();
+  const deptOfActor=name=>{const u=DB.users.find(x=>fullName(x)===name);return u?u.department:null;};
+  const q=(F.audQ||'').toLowerCase();
+  let rows=all.filter(l=>{
+    if(F.audActor&&l.actor!==F.audActor)return false;
+    if(F.audDept&&deptOfActor(l.actor)!==F.audDept)return false;
+    if(F.audCat&&cat(l)!==F.audCat)return false;
+    if(q&&!(((l.actor||'')+' '+(l.action||'')+' '+(l.target||'')).toLowerCase().includes(q)))return false;
+    return true;
+  });
+  const fActive=!!(F.audActor||F.audDept||F.audCat||F.audQ);
+  const selSt='font-size:12px;padding:6px 26px 6px 10px;min-height:0;height:32px;width:auto';
+  const catColor={'OKRs':'#0E9F6E','Checklists':'#0EA5E9','Leave':'#8B5CF6','Attendance':'#F59E0B','Access Control':'#BE123C','Users':'#4338CA','Tickets':'#C2410C','Questions':'#0369A1','Documents':'#6B7280','Other':'#9CA3AF'};
+  const list=rows.map(l=>{const c=cat(l);const u=DB.users.find(x=>fullName(x)===l.actor);
+    return `<div style="display:flex;align-items:center;gap:11px;padding:11px 16px;border-bottom:1px solid var(--c-border);font-size:13.5px">
+      ${u?avatar(u,'w-7 h-7','text-[10px]'):'<span style="width:7px;height:7px;border-radius:99px;background:var(--c-brand);flex-shrink:0"></span>'}
+      <div style="flex:1;min-width:0"><span style="font-weight:700;color:var(--c-text)">${esc(l.actor)}</span> <span style="color:var(--c-text-2)">${esc((l.action||'').toLowerCase())}</span>${l.target?` <span style="font-weight:600;color:var(--c-text)">${esc(l.target)}</span>`:''}
+        ${u&&u.department?`<span style="font-size:10.5px;color:var(--c-text-3)"> · ${esc(u.department)}</span>`:''}</div>
+      <span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;background:${(catColor[c]||'#9CA3AF')}18;color:${catColor[c]||'#9CA3AF'};flex-shrink:0">${esc(c)}</span>
+      <span style="font-size:11px;color:var(--c-text-3);flex-shrink:0">${new Date(l.time).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
+    </div>`;}).join('');
+  return`<div class="fade">${hdr('Audit Logs','Every action taken in the workspace')}
+    <div class="ui-card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin-bottom:12px">
+      <input id="aud-q" value="${esc(F.audQ||'')}" oninput="S.filters.audQ=this.value;App._searchRR('aud-q')" placeholder="Search actions…" class="ui-input" style="flex:1;min-width:150px;height:32px;min-height:0;padding:4px 12px;font-size:12.5px"/>
+      <select onchange="S.filters.audActor=this.value;rr()" class="ui-select" style="${selSt}"><option value="">All people</option>${actors.map(a2=>`<option ${F.audActor===a2?'selected':''}>${esc(a2)}</option>`).join('')}</select>
+      <select onchange="S.filters.audDept=this.value;rr()" class="ui-select" style="${selSt}"><option value="">All departments</option>${DB.departments.map(d=>`<option ${F.audDept===d.name?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
+      <select onchange="S.filters.audCat=this.value;rr()" class="ui-select" style="${selSt}"><option value="">All tabs</option>${cats.map(c=>`<option ${F.audCat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+      ${fActive?`<button onclick="S.filters.audQ='';S.filters.audActor='';S.filters.audDept='';S.filters.audCat='';rr()" class="ui-btn ui-btn-ghost ui-btn-sm">Clear</button>`:''}
+      <span style="font-size:11px;color:var(--c-text-3)">${rows.length} of ${all.length}</span>
+    </div>
+    ${rows.length?card(`<div style="max-height:70vh;overflow-y:auto">${list}</div>`,{pad:false}):card(empty('audit',fActive?'Nothing matches':'No logs yet',fActive?'Try clearing a filter.':'Actions will appear here as people use the app.'),{pad:false})}</div>`;
 }
 App._goNotifFeedback=()=>{S.route="notifications";S.search="";S.expandedCl=null;S.afOpen=null;S.tvUser=null;S.filters={ntab:"Feedback"};render();window.scrollTo(0,0);};
 
@@ -9703,388 +9772,366 @@ App._afDel=(i)=>{if(!_AF||_AF.length<=1)return;_AF.splice(i,1);_afRefresh();};
 App._afMove=(i,d)=>{if(!_AF)return;const j=i+d;if(j<0||j>=_AF.length)return;const t=_AF[i];_AF[i]=_AF[j];_AF[j]=t;_afRefresh();};
 
 /* ════════ ACCESS CONTROL (role profiles & permissions) — Super Admin only ════════ */
-/* ═══════ ACCESS CONTROL v2 — per-person toggles for EVERYTHING ═══════
-   No fixed roles: every tab, action and scope is an explicit toggle on each person
-   (u.hrm.perms — baked from their old role on first load, then fully editable here).
-   Also hosts the per-person switches that used to live on the Users page: submission
-   rules, approval requirements, HR powers, city access and the document access matrix.
-   Guard rails: you can never remove the LAST person's Access Control rights. */
+/* ═══════ ACCESS CONTROL v3 — ROLES first ═══════
+   Two tabs. ROLES: create/edit named roles — each role is a full toggle set over every tab,
+   feature and action (incl. all HR modules). PEOPLE: assign a role to each person in ONE click,
+   plus per-person switches (submission rules, approvals, HR-approver stage, cities, document
+   access) and optional per-area OVERRIDES that beat the role. Staged edits — Save applies.
+   Guard rails: the LAST person with Access Control can never lose it (any path). */
+let _ACD=null; // per-user draft: {uid,perms(overrides),rules,approval,isHR,cities,docAccess,dirty}
+let _RPD=null; // role draft: {id,name,description,perms,builtin,isNew,dirty}
 function accessControlPage(){
   if(!can('accessControl','view'))return empty('shield','Restricted','You don\'t have access to Access Control.');
   _seedRoleProfiles();
+  const tab=S.filters.acTab||'people';
+  const tabs=`<div class="ui-tabs" style="margin-bottom:14px">
+    <button class="ui-tab${tab==='people'?' on':''}" onclick="S.filters.acTab='people';rr()">People <span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:99px;background:var(--c-surface-2);color:var(--c-text-2);margin-left:5px">${DB.users.filter(u=>u.status==='Active').length}</span></button>
+    <button class="ui-tab${tab==='roles'?' on':''}" onclick="S.filters.acTab='roles';rr()">Roles <span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:99px;background:var(--c-surface-2);color:var(--c-text-2);margin-left:5px">${Object.keys(DB.roleProfiles||{}).length}</span></button>
+  </div>`;
+  return `<div class="fade">${hdr('Access Control','Create roles → assign to people. Overrides handle the exceptions.')}${tabs}${tab==='roles'?_acRolesTab():_acPeopleTab()}</div>`;
+}
+/* ─────────────── PEOPLE TAB ─────────────── */
+function _acPeopleTab(){
   const canMng=can('accessControl','manage');
   const q=(S.filters.acQ||'').toLowerCase();
-  let list=DB.users.filter(u=>u.status==='Active'||u.status==='Inactive');
+  let list=DB.users.slice();
   if(q)list=list.filter(u=>fullName(u).toLowerCase().includes(q)||String(u.email||'').toLowerCase().includes(q));
   if(S.filters.acDep)list=list.filter(u=>u.department===S.filters.acDep);
   list.sort((a,b)=>fullName(a).localeCompare(fullName(b)));
-  if(!S.filters.acUser||!uById(S.filters.acUser))S.filters.acUser=(list[0]||{}).id||null;
-  const sel=uById(S.filters.acUser);
-  const roleTag=u=>u.role==='Admin'?'<span style="font-size:9.5px;font-weight:800;padding:1px 7px;border-radius:20px;background:#15171C;color:#fff">SUPER</span>':u.role==='SubAdmin'?'<span style="font-size:9.5px;font-weight:800;padding:1px 7px;border-radius:20px;background:#EEF2FF;color:#4338CA">ADMIN</span>':(subTree(u.id).length?'<span style="font-size:9.5px;font-weight:800;padding:1px 7px;border-radius:20px;background:#E0F2FE;color:#0369A1">MGR</span>':'');
+  const roles=Object.values(DB.roleProfiles||{});
+  const hi=S.filters.acUser;
   const rows=list.map(u=>{
-    const on=sel&&u.id===sel.id;
-    const nOn=(()=>{const p=u.hrm?.perms||{};let n=0;Object.values(p).forEach(a=>{Object.values(a.actions||{}).forEach(v=>{if(v)n++;});});return n;})();
-    return `<button onclick="S.filters.acUser='${u.id}';rr()" style="width:100%;display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:11px;border:1px solid ${on?'var(--c-text)':'transparent'};background:${on?'var(--c-ink)':'transparent'};cursor:pointer;text-align:left">
-      ${avatar(u,'w-7 h-7','text-[10px]')}
-      <span style="flex:1;min-width:0">
-        <span style="display:block;font-size:12.5px;font-weight:700;color:${on?'#fff':'var(--c-text)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(fullName(u))}</span>
-        <span style="display:block;font-size:10.5px;color:${on?'rgba(255,255,255,.65)':'var(--c-text-3)'}">${esc(u.department||'—')} · ${nOn} on</span>
-      </span>${roleTag(u)}
-    </button>`;
+    _ensureHrm(u);
+    const rid=u.hrm.roleProfileId||'';
+    const nOv=Object.keys(u.hrm.perms||{}).length;
+    const hrTag=u.hrm.isHR?'<span style="font-size:9px;font-weight:800;padding:1px 6px;border-radius:10px;background:#FCE7F3;color:#9D174D" title="HR approver stage">HR</span>':'';
+    return `<tr id="acu-${u.id}" style="${hi===u.id?'background:var(--c-brand-soft);':''}border-bottom:1px solid var(--c-border)">
+      <td style="padding:10px 12px"><div style="display:flex;align-items:center;gap:10px;min-width:0">${avatar(u,'w-8 h-8','text-[11px]')}<div style="min-width:0"><div style="font-size:13px;font-weight:700;color:var(--c-text);display:flex;align-items:center;gap:6px">${esc(fullName(u))} ${hrTag}</div><div style="font-size:11px;color:var(--c-text-3)">${esc(u.department||'—')} · ${esc(roleLabel(u.role))}</div></div></div></td>
+      <td style="padding:10px 8px">${canMng
+        ?`<select onchange="App._acAssignRole('${u.id}',this.value)" class="ui-select" style="width:auto;min-width:150px;font-size:12px;min-height:0;height:32px;padding:4px 26px 4px 10px">${roles.map(r=>`<option value="${r.id}" ${rid===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}${rid&&!DB.roleProfiles[rid]?`<option value="${esc(rid)}" selected>${esc(rid)} (missing)</option>`:''}${!rid?'<option value="" selected>— No role —</option>':''}</select>`
+        :`<span style="font-size:12px;font-weight:700;color:var(--c-text-2)">${esc((DB.roleProfiles[rid]||{}).name||'— No role —')}</span>`}</td>
+      <td style="padding:10px 8px">${nOv?`<span style="font-size:11px;font-weight:800;padding:2px 9px;border-radius:20px;background:#FEF3C7;color:#92400E">${nOv} override${nOv===1?'':'s'}</span>`:'<span style="font-size:11px;color:var(--c-text-3)">follows role</span>'}</td>
+      <td style="padding:10px 12px;text-align:right"><button onclick="App._acCustomize('${u.id}')" class="ui-btn ui-btn-ghost ui-btn-sm">${ic('cog','w-3.5 h-3.5')}${canMng?'Customize':'View'}</button></td>
+    </tr>`;
   }).join('');
-  return `<div class="fade">${hdr('Access Control','Every permission, for every person — toggles decide everything')}
-    <div style="display:grid;grid-template-columns:270px 1fr;gap:14px;align-items:start" class="ac-grid">
-      <style>@media(max-width:820px){.ac-grid{grid-template-columns:1fr !important}}</style>
-      <div class="ui-card" style="padding:12px;position:sticky;top:70px;max-height:calc(100vh - 90px);display:flex;flex-direction:column">
-        <input oninput="S.filters.acQ=this.value;App._searchRR('ac-q')" id="ac-q" value="${esc(S.filters.acQ||'')}" placeholder="Search people…" class="ui-input" style="margin-bottom:8px"/>
-        <select onchange="S.filters.acDep=this.value;rr()" class="ui-select" style="margin-bottom:8px"><option value="">All departments</option>${DB.departments.map(d=>`<option ${S.filters.acDep===d.name?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
-        <div style="overflow-y:auto;display:flex;flex-direction:column;gap:2px">${rows||'<div style="padding:12px;font-size:12px;color:var(--c-text-3)">No people match.</div>'}</div>
-      </div>
-      <div>${sel?_acUserPanel(sel,canMng):empty('users','Pick a person','Select someone on the left to see and edit their access.')}</div>
+  return `<div class="ui-card" style="padding:0;overflow:hidden">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;padding:12px;border-bottom:1px solid var(--c-border)">
+      <input oninput="S.filters.acQ=this.value;App._searchRR('ac-q')" id="ac-q" value="${esc(S.filters.acQ||'')}" placeholder="Search people…" class="ui-input" style="flex:1;min-width:160px"/>
+      <select onchange="S.filters.acDep=this.value;rr()" class="ui-select" style="width:auto"><option value="">All departments</option>${DB.departments.map(d=>`<option ${S.filters.acDep===d.name?'selected':''}>${esc(d.name)}</option>`).join('')}</select>
     </div>
+    <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:left;border-bottom:1px solid var(--c-border)">
+        <th style="padding:9px 12px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Person</th>
+        <th style="padding:9px 8px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Role (decides their tabs)</th>
+        <th style="padding:9px 8px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em">Exceptions</th>
+        <th></th></tr></thead>
+      <tbody>${rows||`<tr><td colspan="4">${empty('users','No people match','')}</td></tr>`}</tbody>
+    </table></div>
   </div>`;
+}
+App._acAssignRole=(uid2,roleId)=>{
+  if(!can('accessControl','manage'))return toast('You need Access Control → Manage','err');
+  const u=uById(uid2);if(!u||!roleId||!DB.roleProfiles[roleId])return;
+  _ensureHrm(u);
+  const old=u.hrm.roleProfileId;
+  if(old===roleId)return;
+  // lockout: if the OLD standing granted AC and the new role doesn't, someone else must still hold it
+  const newGrants=a=>!!(DB.roleProfiles[roleId].perms?.accessControl?.actions?.[a])||!!(u.hrm.perms?.accessControl?.actions?.[a]);
+  for(const act of ['view','manage']){
+    if(canUser(u,'accessControl',act)&&!newGrants(act)&&!_acLockoutSafe(u.id,act)){rr();return toast('Blocked — '+fullName(u)+' is the last person with Access Control ('+act+')','err');}
+  }
+  u.hrm.roleProfileId=roleId;u.hrm.permsV3=1;
+  log(fullName(me()),'Role assigned',fullName(u)+' → '+(DB.roleProfiles[roleId].name||roleId));
+  saveDB();_syncRoleProfiles();toast(fullName(u)+' → '+(DB.roleProfiles[roleId].name||roleId));rr();
+};
+/* ── Per-person Customize modal: personal switches + doc access + per-area overrides ── */
+function _acDraft(u){
+  if(_ACD&&_ACD.uid===u.id)return _ACD;
+  _ensureHrm(u);
+  _ACD={uid:u.id,
+    perms:JSON.parse(JSON.stringify(u.hrm.perms||{})),
+    rules:{past:true,future:true,edit:true,...(u.rules||{})},
+    approval:{past:false,future:false,edited:false,...(u.approval||{})},
+    isHR:u.hrm.isHR===true,
+    cities:Array.isArray(u.cities)?u.cities.slice():[],
+    docAccess:JSON.parse(JSON.stringify(u.docAccess||{departments:{},locations:{}})),
+    dirty:false};
+  return _ACD;
 }
 function _acTogBtn(on,label,onclick,disabled){
   return `<button ${disabled?'disabled':''} onclick="${onclick}" style="display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;border:1.5px solid ${on?'#0E9F6E':'var(--c-border)'};background:${on?'#ECFDF5':'var(--c-surface)'};color:${on?'#0B7A55':'var(--c-text-3)'};font-size:11.5px;font-weight:700;cursor:${disabled?'not-allowed':'pointer'};opacity:${disabled?'.45':'1'}">
     <span style="width:6px;height:6px;border-radius:50%;background:${on?'#10B981':'#D1D5DB'};flex-shrink:0"></span>${esc(label)}</button>`;
 }
-function _acUserPanel(u,canMng){
-  _ensureHrm(u);
-  if(!u.hrm.permsBaked)_rebakeUser(u);
-  const perms=u.hrm.perms||{};
+App._acCustomize=(uid2)=>{
+  if(_ACD&&_ACD.uid!==uid2&&_ACD.dirty&&!confirm('Discard unsaved changes for the previous person?'))return;
+  if(_ACD&&_ACD.uid!==uid2)_ACD=null;
+  S.filters.acUser=uid2;
+  App._renderACUser();
+};
+App._renderACUser=()=>{
+  const u=uById(S.filters.acUser);if(!u)return;
+  const d=_acDraft(u);
+  const canMng=can('accessControl','manage'),dis=!canMng;
   const lab='font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.06em';
-  const dis=!canMng;
-  // header + presets
-  const presets=[['basic','Basic employee'],['manager','Team lead'],['admin','Admin (all ops)'],['everything','Everything']];
-  const head=`<div class="ui-card" style="padding:16px;margin-bottom:12px">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      ${avatar(u,'w-11 h-11','text-sm')}
-      <div style="flex:1;min-width:170px">
-        <div class="fd" style="font-size:16px;font-weight:800;color:var(--c-text)">${esc(fullName(u))}</div>
-        <div style="font-size:12px;color:var(--c-text-2)">${esc(u.position||'—')} · ${esc(u.department||'—')} · base role: ${esc(roleLabel(u.role))}</div>
-      </div>
-      ${chip(u.status)}
-    </div>
-    ${canMng?`<div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:13px;padding-top:12px;border-top:1px dashed var(--c-border)">
-      <span style="${lab}">Quick presets:</span>
-      ${presets.map(p=>`<button onclick="App._acPreset('${u.id}','${p[0]}')" class="ui-btn ui-btn-ghost ui-btn-sm">${p[1]}</button>`).join('')}
-      <button onclick="App._acResetRole('${u.id}')" class="ui-btn ui-btn-ghost ui-btn-sm" title="Recompute from their base role">${ic('back','w-3.5 h-3.5')}Reset to role default</button>
-    </div>`:'<div style="font-size:11.5px;color:var(--c-text-3);margin-top:10px">You can view this person\'s access but need Access Control → Manage to change it.</div>'}
-  </div>`;
-  // ── special per-person switches (moved here from the Users page) ──
-  const r=u.rules||{past:true,future:true,edit:true},ap=u.approval||{past:false,future:false,edited:false};
-  const special=`<div class="ui-card" style="padding:16px;margin-bottom:12px">
-    <div style="${lab};margin-bottom:10px">Personal switches — submissions, HR, cities</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">
-      <div><div style="font-size:12px;font-weight:700;color:var(--c-text);margin-bottom:7px">Checklist submissions</div>
-        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start">
-        ${_acTogBtn(r.past!==false,'Can submit past dates',`App._acRule('${u.id}','past')`,dis)}
-        ${_acTogBtn(r.future!==false,'Can submit future dates',`App._acRule('${u.id}','future')`,dis)}
-        ${_acTogBtn(r.edit!==false,'Can edit submitted data',`App._acRule('${u.id}','edit')`,dis)}
+  const role=_roleOf(u);
+  const r=d.rules,ap=d.approval;
+  const personal=`<div style="${lab};margin:2px 0 8px">Personal switches</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px">
+      <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">Checklist submissions</div><div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">
+        ${_acTogBtn(r.past!==false,'Can submit past dates',`App._acRule('past')`,dis)}
+        ${_acTogBtn(r.future!==false,'Can submit future dates',`App._acRule('future')`,dis)}
+        ${_acTogBtn(r.edit!==false,'Can edit submitted data',`App._acRule('edit')`,dis)}
       </div></div>
-      <div><div style="font-size:12px;font-weight:700;color:var(--c-text);margin-bottom:7px">Their submissions need approval when…</div>
-        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start">
-        ${_acTogBtn(ap.past===true,'Past-dated entry',`App._acAppr('${u.id}','past')`,dis)}
-        ${_acTogBtn(ap.future===true,'Future-dated entry',`App._acAppr('${u.id}','future')`,dis)}
-        ${_acTogBtn(ap.edited===true,'Edited entry',`App._acAppr('${u.id}','edited')`,dis)}
+      <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">Needs approval when…</div><div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">
+        ${_acTogBtn(ap.past===true,'Past-dated entry',`App._acAppr('past')`,dis)}
+        ${_acTogBtn(ap.future===true,'Future-dated entry',`App._acAppr('future')`,dis)}
+        ${_acTogBtn(ap.edited===true,'Edited entry',`App._acAppr('edited')`,dis)}
       </div></div>
-      <div><div style="font-size:12px;font-weight:700;color:var(--c-text);margin-bottom:7px">HR powers</div>
-        ${_acTogBtn(u.hrm.isHR===true,'HR (HRM config, 2nd-stage approver)',`App._acHR('${u.id}')`,dis)}
-        <div style="font-size:10.5px;color:var(--c-text-3);margin-top:6px;line-height:1.45">Turning this ON also switches on the HR-area toggles below (leave, balances, HR settings…).</div>
+      <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">HR approver stage</div>
+        ${_acTogBtn(d.isHR===true,'Acts as HR (2nd) stage in leave approvals',`App._acHRFlag()`,dis)}
+        <div style="font-size:10.5px;color:var(--c-text-3);margin-top:5px;line-height:1.4">HR <b>modules</b> (attendance, balances, HR settings…) come from the assigned role — e.g. the built-in “HR” role.</div>
       </div>
-      <div><div style="font-size:12px;font-weight:700;color:var(--c-text);margin-bottom:7px">City access <span style="font-weight:500;color:var(--c-text-3)">(none selected = all cities)</span></div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px">${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>_acTogBtn((u.cities||[]).includes(l.id),l.name,`App._acCity('${u.id}','${l.id}')`,dis)).join('')||'<span style="font-size:11.5px;color:var(--c-text-3)">No locations defined.</span>'}</div>
+      <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">City access <span style="font-weight:500;color:var(--c-text-3)">(none = all)</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px">${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>_acTogBtn((d.cities||[]).includes(l.id),l.name,`App._acCity('${l.id}')`,dis)).join('')||'<span style="font-size:11px;color:var(--c-text-3)">No locations.</span>'}</div>
       </div>
-    </div>
-  </div>`;
-  // ── document access matrix ──
-  const da=u.docAccess||{departments:{},locations:{}};
+    </div>`;
+  const da=d.docAccess||{departments:{},locations:{}};
   const docRow=(kind,id,name)=>{
     const p=(da[kind]||{})[id]||{};
-    const viewOn=!!p.view,mngOn=!!(p.upload||p.edit||p.download);
-    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0">
-      <span style="flex:1;min-width:0;font-size:12.5px;font-weight:600;color:var(--c-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>
-      ${_acTogBtn(viewOn,'View',`App._acDoc('${u.id}','${kind}','${id}','view')`,dis)}
-      ${_acTogBtn(mngOn,'Upload / manage',`App._acDoc('${u.id}','${kind}','${id}','manage')`,dis)}
+    return `<div style="display:flex;align-items:center;gap:7px;padding:4px 0">
+      <span style="flex:1;min-width:0;font-size:12px;font-weight:600;color:var(--c-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</span>
+      ${_acTogBtn(!!p.view,'View',`App._acDoc('${kind}','${id}','view')`,dis)}
+      ${_acTogBtn(!!(p.upload||p.edit||p.download),'Manage',`App._acDoc('${kind}','${id}','manage')`,dis)}
     </div>`;
   };
-  const docs=`<div class="ui-card" style="padding:16px;margin-bottom:12px">
-    <div style="${lab};margin-bottom:4px">Document access — which department / location files they see</div>
-    <div style="font-size:10.5px;color:var(--c-text-3);margin-bottom:10px">These also unlock the Departments / Locations tabs for this person.</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:4px 22px">
-      ${(DB.departments||[]).map(d=>docRow('departments',d.id,d.name)).join('')}
+  const docs=`<div style="${lab};margin:2px 0 4px">Document access <span style="text-transform:none;font-weight:600">(also unlocks the Departments / Locations tabs)</span></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:2px 20px;margin-bottom:14px">
+      ${(DB.departments||[]).map(dp=>docRow('departments',dp.id,dp.name)).join('')}
       ${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>docRow('locations',l.id,l.name+' (location)')).join('')}
-    </div>
-  </div>`;
-  // ── the full permission grid, grouped ──
-  const groups={};
-  PERM_AREAS.forEach(a=>{(groups[a.group||'System']=groups[a.group||'System']||[]).push(a);});
-  const groupCards=Object.keys(groups).map(g=>{
-    const areas=groups[g].map(a=>{
-      const cur=perms[a.key]||{scope:'none',actions:{}};
-      const acts=a.actions.map(act=>_acTogBtn(!!(cur.actions||{})[act],PERM_ACTION_LABEL[act]||act,`App._acT('${u.id}','${a.key}','${act}')`,dis)).join('');
-      const scopeSel=a.scoped?`<select ${dis?'disabled':''} onchange="App._acScope('${u.id}','${a.key}',this.value)" class="ui-select" style="width:auto;font-size:11.5px;padding:4px 26px 4px 9px;min-height:0;height:27px">
-        ${SCOPE_ORDER.map(s=>`<option value="${s}" ${((cur.scope||'none')===s)?'selected':''}>${SCOPE_LABEL[s]}</option>`).join('')}</select>`:'';
-      return `<div style="display:grid;grid-template-columns:minmax(150px,220px) 1fr;gap:6px 14px;padding:9px 0;border-top:1px solid var(--c-border);align-items:start">
-        <div><div style="font-size:12.5px;font-weight:700;color:var(--c-text)">${esc(a.label)}</div><div style="font-size:10.5px;color:var(--c-text-3);line-height:1.35;margin-top:1px">${esc(a.desc)}</div></div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${acts}${scopeSel?`<span style="font-size:10px;color:var(--c-text-3);margin-left:2px">sees:</span>${scopeSel}`:''}</div>
+    </div>`;
+  // per-area overrides: follows role by default; Override copies the role's area for editing
+  const groups={};PERM_AREAS.forEach(a=>{(groups[a.group||'System']=groups[a.group||'System']||[]).push(a);});
+  const ovCards=Object.keys(groups).map(g=>{
+    const rowsH=groups[g].map(a=>{
+      const ov=d.perms[a.key];
+      const roleArea=(role&&role.perms&&role.perms[a.key])||null;
+      const roleActs=roleArea?a.actions.filter(x=>roleArea.actions&&roleArea.actions[x]).map(x=>PERM_ACTION_LABEL[x]||x).join(', ')||'nothing':'nothing';
+      const body=ov
+        ?`<div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center">
+            ${a.actions.map(act=>_acTogBtn(!!(ov.actions||{})[act],PERM_ACTION_LABEL[act]||act,`App._acT('${a.key}','${act}')`,dis)).join('')}
+            ${a.scoped?`<select ${dis?'disabled':''} onchange="App._acScope('${a.key}',this.value)" class="ui-select" style="width:auto;font-size:11px;padding:3px 24px 3px 8px;min-height:0;height:25px">${SCOPE_ORDER.map(s=>`<option value="${s}" ${((ov.scope||'none')===s)?'selected':''}>${SCOPE_LABEL[s]}</option>`).join('')}</select>`:''}
+            ${canMng?`<button onclick="App._acOvRm('${a.key}')" style="font-size:10.5px;font-weight:700;color:var(--c-danger-ink);background:none;border:none;cursor:pointer;padding:2px 6px">✕ Remove override</button>`:''}
+          </div>`
+        :`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:11px;color:var(--c-text-3)">Follows role: <b style="color:var(--c-text-2)">${esc(roleActs)}</b>${a.scoped&&roleArea?` · sees ${SCOPE_LABEL[roleArea.scope||'none']}`:''}</span>
+            ${canMng?`<button onclick="App._acOvAdd('${a.key}')" class="ui-btn ui-btn-ghost ui-btn-sm" style="min-height:24px;padding:2px 10px;font-size:11px">Override</button>`:''}
+          </div>`;
+      return `<div style="display:grid;grid-template-columns:minmax(140px,200px) 1fr;gap:4px 12px;padding:8px 0;border-top:1px solid var(--c-border);align-items:center;${ov?'background:linear-gradient(90deg,rgba(245,158,11,.06),transparent);':''}">
+        <div><div style="font-size:12px;font-weight:700;color:var(--c-text)">${esc(a.label)}${ov?' <span style="font-size:9px;font-weight:800;color:#92400E;background:#FEF3C7;padding:1px 6px;border-radius:8px;vertical-align:middle">OVERRIDE</span>':''}</div></div>
+        ${body}
       </div>`;
     }).join('');
-    return `<div class="ui-card" style="padding:16px;margin-bottom:12px"><div style="${lab};margin-bottom:6px">${esc(g)}</div>${areas}</div>`;
+    return `<div style="margin-bottom:10px"><div style="${lab};margin-bottom:2px">${esc(g)}</div>${rowsH}</div>`;
   }).join('');
-  return head+special+docs+groupCards;
-}
-/* ── instant-save handlers (all logged; Access Control area is lockout-guarded) ── */
+  modalShell({title:'Access — '+fullName(u),sub:(role?('Role: '+role.name):'No role assigned')+' · changes apply on Save',size:'max-w-3xl',
+    body:`<div>${d.dirty?'<div style="font-size:11.5px;font-weight:800;color:#92400E;background:#FEF3C7;border-radius:9px;padding:7px 11px;margin-bottom:12px">● Unsaved changes — press Save below</div>':''}
+      ${personal}${docs}
+      <div style="${lab};margin:2px 0 8px">Per-area overrides <span style="text-transform:none;font-weight:600">(beat the role — even for a Super Admin)</span></div>
+      ${ovCards}
+    </div>`,
+    footer:btnG('Cancel','_ACD=null;App.closeModal();rr()')+(canMng?btnP('Save changes','App._acSave()'):'')});
+};
 function _acGuard(){if(!can('accessControl','manage')){toast('You need Access Control → Manage','err');return false;}return true;}
-function _acTouch(u,what){log(fullName(me()),'Access changed',fullName(u)+' — '+what);saveDB();rr();}
-// Push the profile-table fields (rules/approval/cities/docAccess) for one user right away.
+function _acMark(){if(_ACD){_ACD.dirty=true;App._renderACUser();}}
 function _acPushProfile(u){
   sb.from('profiles').update({rules:u.rules||{},approval_settings:u.approval||{},cities:u.cities||[],doc_access:u.docAccess||{departments:{},locations:{}}}).eq('id',u.id).then(({error})=>{if(error)_syncErr('access change')(error);}).catch(_syncErr('access change'));
 }
-App._acT=(uid2,area,act)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  _ensureHrm(u);if(!u.hrm.permsBaked)_rebakeUser(u);
-  const p=u.hrm.perms[area]=u.hrm.perms[area]||{scope:'none',actions:{}};
+App._acOvAdd=(area)=>{
+  if(!_acGuard()||!_ACD)return;
+  const u=uById(_ACD.uid);const role=_roleOf(u);
+  const base=(role&&role.perms&&role.perms[area])?JSON.parse(JSON.stringify(role.perms[area])):{scope:'none',actions:{}};
+  base.actions=base.actions||{};
+  _ACD.perms[area]=base;_acMark();
+};
+App._acOvRm=(area)=>{if(!_acGuard()||!_ACD)return;delete _ACD.perms[area];_acMark();};
+App._acT=(area,act)=>{
+  if(!_acGuard()||!_ACD)return;
+  const p=_ACD.perms[area];if(!p)return;
   p.actions=p.actions||{};
-  const next=!p.actions[act];
-  if(area==='accessControl'&&!next&&!_acLockoutSafe(uid2,act)){toast('Blocked — this is the last person with Access Control '+act,'err');return;}
-  p.actions[act]=next;
-  if(next&&act!=='view'&&(PERM_AREAS.find(a=>a.key===area)||{actions:[]}).actions.includes('view')&&!p.actions.view)p.actions.view=true; // granting an action implies seeing the tab
+  const next=!p.actions[act];p.actions[act]=next;
+  if(next&&act!=='view'&&(PERM_AREAS.find(a=>a.key===area)||{actions:[]}).actions.includes('view')&&!p.actions.view)p.actions.view=true;
   if(next&&(PERM_AREAS.find(a=>a.key===area)||{}).scoped&&(!p.scope||p.scope==='none'))p.scope='self';
-  _acTouch(u,area+'.'+act+' → '+(next?'ON':'OFF'));
+  _acMark();
 };
-App._acScope=(uid2,area,scope)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  _ensureHrm(u);if(!u.hrm.permsBaked)_rebakeUser(u);
-  const p=u.hrm.perms[area]=u.hrm.perms[area]||{scope:'none',actions:{}};
-  p.scope=scope;
-  _acTouch(u,area+' scope → '+scope);
+App._acScope=(area,scope)=>{if(!_acGuard()||!_ACD)return;const p=_ACD.perms[area];if(!p)return;p.scope=scope;_acMark();};
+App._acRule=(key)=>{if(!_acGuard()||!_ACD)return;_ACD.rules[key]=_ACD.rules[key]===false;_acMark();};
+App._acAppr=(key)=>{if(!_acGuard()||!_ACD)return;_ACD.approval[key]=_ACD.approval[key]!==true;_acMark();};
+App._acHRFlag=()=>{if(!_acGuard()||!_ACD)return;_ACD.isHR=!(_ACD.isHR===true);_acMark();};
+App._acCity=(cityId)=>{
+  if(!_acGuard()||!_ACD)return;
+  const i=_ACD.cities.indexOf(cityId);
+  if(i>-1)_ACD.cities.splice(i,1);else _ACD.cities.push(cityId);
+  _acMark();
 };
-App._acRule=(uid2,key)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  u.rules=u.rules||{past:true,future:true,edit:true};
-  u.rules[key]=u.rules[key]===false;
-  _acPushProfile(u);_acTouch(u,'submission rule '+key+' → '+(u.rules[key]?'ON':'OFF'));
-};
-App._acAppr=(uid2,key)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  u.approval=u.approval||{past:false,future:false,edited:false};
-  u.approval[key]=u.approval[key]!==true;
-  _acPushProfile(u);_acTouch(u,'approval-needed '+key+' → '+(u.approval[key]?'ON':'OFF'));
-};
-App._acHR=(uid2)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  _ensureHrm(u);if(!u.hrm.permsBaked)_rebakeUser(u);
-  const on=!(u.hrm.isHR===true);
-  u.hrm.isHR=on;
-  if(on){ // grant the HR floor as explicit toggles so the switch actually opens the doors
-    const grant={hrSettings:['view','edit'],leaveBalances:['view','edit','grant'],leaveRequests:['view','create','approve','download'],attendance:['view','edit','download'],documentsOrg:['approve'],reports:['view','download'],approvals:['view']};
-    Object.keys(grant).forEach(area=>{
-      const p=u.hrm.perms[area]=u.hrm.perms[area]||{scope:'none',actions:{}};p.actions=p.actions||{};
-      grant[area].forEach(act=>{p.actions[act]=true;});
-      if((PERM_AREAS.find(a=>a.key===area)||{}).scoped)p.scope='everyone';
-    });
-  }
-  _acTouch(u,'HR powers → '+(on?'ON (HR areas granted)':'OFF (area toggles kept — adjust below)'));
-};
-App._acCity=(uid2,cityId)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  u.cities=Array.isArray(u.cities)?u.cities:[];
-  const i=u.cities.indexOf(cityId);
-  if(i>-1)u.cities.splice(i,1);else u.cities.push(cityId);
-  _acPushProfile(u);_acTouch(u,'city access changed ('+u.cities.length+' selected)');
-};
-App._acDoc=(uid2,kind,id,which)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  u.docAccess=u.docAccess||{departments:{},locations:{}};
-  const bucket=u.docAccess[kind]=u.docAccess[kind]||{};
+App._acDoc=(kind,id,which)=>{
+  if(!_acGuard()||!_ACD)return;
+  const bucket=_ACD.docAccess[kind]=_ACD.docAccess[kind]||{};
   const p=bucket[id]=bucket[id]||{};
   if(which==='view'){const on=!p.view;p.view=on;if(!on){p.upload=false;p.edit=false;p.download=false;}}
   else{const on=!(p.upload||p.edit||p.download);p.upload=on;p.edit=on;p.download=on;if(on)p.view=true;}
-  // documents visibility also drives the Departments/Locations tabs — keep those toggles in step
-  const anyDept=Object.values(u.docAccess.departments||{}).some(x=>x.view);
-  const anyLoc=Object.values(u.docAccess.locations||{}).some(x=>x.view);
-  _ensureHrm(u);if(!u.hrm.permsBaked)_rebakeUser(u);
-  (u.hrm.perms.departments=u.hrm.perms.departments||{scope:'none',actions:{}}).actions.view=anyDept||!!u.hrm.perms.departments.actions?.create;
-  (u.hrm.perms.locations=u.hrm.perms.locations||{scope:'none',actions:{}}).actions.view=anyLoc||!!u.hrm.perms.locations.actions?.manage;
-  (u.hrm.perms.documentsOrg=u.hrm.perms.documentsOrg||{scope:'none',actions:{}}).actions.view=anyDept||anyLoc;
-  _acPushProfile(u);_acTouch(u,'document access — '+kind+' '+which);
+  _acMark();
 };
-App._acPreset=(uid2,kind)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
+App._acSave=()=>{
+  if(!_acGuard())return;
+  const d=_ACD;if(!d)return;
+  const u=uById(d.uid);if(!u)return;
+  for(const act of ['view','manage']){
+    const has=canUser(u,'accessControl',act);
+    const ov=d.perms.accessControl;
+    const role=_roleOf(u);
+    const will=ov?!!(ov.actions&&ov.actions[act]):!!(role&&role.perms&&role.perms.accessControl&&role.perms.accessControl.actions&&role.perms.accessControl.actions[act]);
+    if(has&&!will&&!_acLockoutSafe(u.id,act))return toast('Blocked — '+fullName(u)+' is the last person with Access Control ('+act+'). Grant it to someone else first.','err');
+  }
   _ensureHrm(u);
-  const out={};
-  const seed=kind==='basic'?(DB.roleProfiles?.basic?.perms||{}):kind==='manager'?(DB.roleProfiles?.manager?.perms||{}):null;
-  PERM_AREAS.forEach(a=>{
-    const acts={};
-    a.actions.forEach(act=>{
-      if(kind==='everything')acts[act]=true;
-      else if(kind==='admin')acts[act]=(a.key!=='accessControl');
-      else{const s=seed&&seed[a.key];acts[act]=!!(s&&s.actions&&s.actions[act]);}
-    });
-    let scope='none';
-    if(a.scoped)scope=kind==='everything'||kind==='admin'?'everyone':(seed&&seed[a.key]&&seed[a.key].scope)||(kind==='manager'?'team':'self');
-    out[a.key]={scope,actions:acts};
-  });
-  // the areas the presets didn't know about
-  if(kind==='manager'){out.teamview.actions.view=true;out.approvals.actions.view=true;}
-  if(kind==='admin'||kind==='everything'){out.teamview.actions.view=true;out.approvals.actions.view=true;out.allChecklists.actions.view=true;}
-  if((kind==='basic'||kind==='manager')&&!_acLockoutSafeAfter(uid2,out))return toast('Blocked — this is the last person with Access Control','err');
-  u.hrm.perms=out;u.hrm.permsBaked=1;
-  _acTouch(u,'preset applied → '+kind);
+  u.hrm.perms=Object.keys(d.perms).length?JSON.parse(JSON.stringify(d.perms)):null;
+  u.hrm.isHR=d.isHR===true;
+  u.rules={...d.rules};u.approval={...d.approval};
+  u.cities=d.cities.slice();u.docAccess=JSON.parse(JSON.stringify(d.docAccess));
+  _acPushProfile(u);
+  log(fullName(me()),'Access updated',fullName(u));
+  _ACD=null;
+  saveDB();closeModal();toast('Access saved for '+fullName(u));rr();
 };
-function _acLockoutSafeAfter(uid2,newPerms){
-  const stillHas=!!(newPerms.accessControl&&newPerms.accessControl.actions&&newPerms.accessControl.actions.manage);
-  return stillHas||_acLockoutSafe(uid2,'manage');
-}
-App._acResetRole=(uid2)=>{
-  if(!_acGuard())return;const u=uById(uid2);if(!u)return;
-  if(u.role!=='Admin'&&!_acLockoutSafe(uid2,'manage')&&canUser(u,'accessControl','manage'))return toast('Blocked — this is the last person with Access Control','err');
-  _rebakeUser(u);
-  _acTouch(u,'reset to base-role defaults ('+roleLabel(u.role)+')');
-};
-// Working copy for the editor modal (avoids mutating DB.roleProfiles until Save).
-let _RP=null;
-App.editRoleProfile=(id=null)=>{
-  if(!isAdmin()){toast('Not permitted','err');return;}
-  _seedRoleProfiles();
-  const existing=id?DB.roleProfiles[id]:null;
-  // Build a deep-cloned working set.
-  _RP={id:existing?existing.id:null,name:existing?existing.name:'',description:existing?existing.description:'',builtin:existing?!!existing.builtin:false,perms:existing?JSON.parse(JSON.stringify(existing.perms||{})):{}};
-  const startPick=existing?'':`<div style="margin-bottom:12px">${selF('Start from a preset','rp-start',[['','— Blank —'],['basic','Basic Employee'],['manager','Team Lead'],['admin','Administrator']],'')}<p style="font-size:11px;color:#9CA3AF;margin-top:4px">Pre-fills sensible defaults you can then adjust.</p></div>`;
-  modalShell({title:`${existing?'Edit':'New'} role profile`,size:'max-w-2xl',
-    body:`<div style="display:flex;flex-direction:column;gap:14px">
-      ${fld('Name','rp-name',_RP.name,'text','e.g. HR Manager')}
-      <div><label for="rp-desc" class="ui-label">Description</label><textarea id="rp-desc" rows="2" class="ui-input rf" placeholder="What this profile is for">${esc(_RP.description)}</textarea></div>
-      ${startPick}
-      <div id="rp-summary" style="background:var(--c-brand-soft);border:1px solid var(--c-brand);border-radius:12px;padding:10px 12px;font-size:12px;color:var(--c-brand-ink);line-height:1.5"></div>
-      <div id="rp-areas" style="display:flex;flex-direction:column;gap:10px">${_rpAreasHTML()}</div>
-    </div>`,
-    footer:btnG('Cancel','App.closeModal()')+btnP('Save profile','App.saveRoleProfile()')});
-  // Live summary: recompute on any toggle click or scope change (event delegation).
-  const areas=$('#rp-areas');
-  if(areas){areas.addEventListener('click',e=>{if(e.target.closest('.tog'))setTimeout(()=>{App._rpSummary();App._rpGroupCounts();},0);});areas.addEventListener('change',()=>{App._rpSummary();App._rpGroupCounts();});}
-  const start=$('#rp-start');
-  if(start)start.addEventListener('change',e=>App._rpApplyStart(e.target.value));
-  App._rpSummary();
-};
-// Render the grouped, data-driven editor by iterating PERM_AREAS (so new areas appear automatically).
-// Areas are partitioned under their `group` with a section header for usability.
-function _rpAreasHTML(){
-  const card=a=>{
-    const cur=_RP.perms[a.key]||{scope:a.scoped?'self':'none',actions:{}};
-    const scopeSel=a.scoped?`<div style="max-width:220px;margin-top:6px">${selF('Visible scope','rp-scope-'+a.key,SCOPE_ORDER.map(s=>[s,SCOPE_LABEL[s]]),cur.scope||'self')}</div>`:'';
-    const togs=a.actions.map(act=>mkTog('rp-act-'+a.key+'-'+act,!!(cur.actions&&cur.actions[act]),PERM_ACTION_LABEL[act]||act)).join('');
-    return `<div style="background:var(--c-surface);border-radius:var(--r-md);border:1px solid var(--c-border);padding:14px">
-      <div class="fd" style="font-size:14px;font-weight:700;color:var(--c-text)">${esc(a.label)}</div>
-      <div style="font-size:11px;color:var(--c-text-3);margin-bottom:6px">${esc(a.desc||'')}</div>
-      ${scopeSel}
-      <div style="margin-top:6px">${togs}</div>
-    </div>`;
-  };
-  const editable=PERM_AREAS.filter(a=>a.key!=='accessControl');
-  // Preserve PERM_GROUPS order, then any areas with an unrecognised/missing group.
-  const groups=[...PERM_GROUPS,...[...new Set(editable.map(a=>a.group).filter(g=>g&&!PERM_GROUPS.includes(g)))]];
-  // Collapsible accordion: each group is a collapsed section you expand on click (keeps the editor
-  // short instead of one long list). A live "N on" badge shows how many permissions are enabled.
-  const sections=groups.map(g=>{
-    const areas=editable.filter(a=>(a.group||'System')===g);
-    if(!areas.length)return '';
-    const sg=_rpSlug(g);
-    let cnt=0;areas.forEach(a=>{const cur=_RP.perms[a.key];if(cur&&cur.actions)cnt+=Object.values(cur.actions).filter(Boolean).length;});
-    return `<div class="rp-group" style="border:1px solid var(--c-border);border-radius:var(--r-md);overflow:hidden;background:var(--c-surface)">
-      <button type="button" onclick="App._rpToggleGroup('${sg}')" aria-expanded="false" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;background:var(--c-surface-2);border:none;cursor:pointer;text-align:left">
-        <span style="display:flex;align-items:center;gap:8px;min-width:0">
-          <span class="fd" style="font-size:13px;font-weight:800;color:var(--c-text)">${esc(g)}</span>
-          <span id="rpgc-${sg}" style="font-size:10.5px;font-weight:700;color:var(--c-brand-ink);background:var(--c-brand-soft);padding:1px 8px;border-radius:99px">${cnt} on</span>
-        </span>
-        <span id="rpgch-${sg}" style="transition:transform .15s;color:var(--c-text-3);display:inline-flex">${ic('chevD','w-4 h-4')}</span>
-      </button>
-      <div id="rpg-${sg}" style="display:none;flex-direction:column;gap:10px;padding:12px 14px">${areas.map(card).join('')}</div>
+/* ─────────────── ROLES TAB ─────────────── */
+function _acRolesTab(){
+  const canMng=can('accessControl','manage');
+  const roles=Object.values(DB.roleProfiles||{}).sort((a,b)=>(b.builtin?1:0)-(a.builtin?1:0)||String(a.name).localeCompare(String(b.name)));
+  const cards=roles.map(p=>{
+    const n=DB.users.filter(u=>u.hrm?.roleProfileId===p.id).length;
+    let on=0;Object.values(p.perms||{}).forEach(a=>Object.values(a.actions||{}).forEach(v=>{if(v)on++;}));
+    return `<div class="ui-card" style="padding:16px;display:flex;flex-direction:column;gap:9px">
+      <div style="min-width:0">
+        <div class="fd" style="font-size:15px;font-weight:800;color:var(--c-text);display:flex;align-items:center;gap:6px;flex-wrap:wrap">${esc(p.name)}${p.builtin?'<span style="font-size:9px;font-weight:800;text-transform:uppercase;background:var(--c-info-soft);color:var(--c-info-ink);padding:2px 6px;border-radius:99px">Built-in</span>':''}</div>
+        <div style="font-size:12px;color:var(--c-text-3);margin-top:3px;line-height:1.45">${esc(p.description||'')}</div>
+      </div>
+      <div style="display:flex;gap:12px;font-size:11.5px;color:var(--c-text-2);font-weight:600">
+        <span style="display:inline-flex;align-items:center;gap:4px">${ic('users','w-3.5 h-3.5')}${n} ${n===1?'person':'people'}</span>
+        <span style="display:inline-flex;align-items:center;gap:4px">${ic('check','w-3.5 h-3.5')}${on} permissions on</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:auto">
+        ${canMng?btn('Edit',`App._rpEdit('${p.id}')`,{variant:'ghost',size:'sm',icon:'edit'}):btn('View',`App._rpEdit('${p.id}')`,{variant:'ghost',size:'sm'})}
+        ${canMng?btn('Duplicate',`App._rpDup('${p.id}')`,{variant:'ghost',size:'sm',icon:'copy'}):''}
+        ${canMng&&!p.builtin?btn('Delete',`App._rpDel('${p.id}')`,{variant:'danger',size:'sm',icon:'trash'}):''}
+      </div>
     </div>`;
   }).join('');
-  return `<div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-bottom:2px">
-      <button type="button" onclick="App._rpExpandAll(true)" style="font-size:11px;font-weight:700;color:var(--c-text-2);background:none;border:none;cursor:pointer;padding:2px 4px">Expand all</button>
-      <span style="color:var(--c-border-2)">·</span>
-      <button type="button" onclick="App._rpExpandAll(false)" style="font-size:11px;font-weight:700;color:var(--c-text-2);background:none;border:none;cursor:pointer;padding:2px 4px">Collapse all</button>
-    </div>${sections}`;
+  return `<div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <p style="font-size:12.5px;color:var(--c-text-3);max-width:560px;line-height:1.5;margin:0">A role bundles every tab / feature / action toggle. Assign roles in the <b>People</b> tab. Built-in roles can be edited or duplicated as a starting point.</p>
+      ${canMng?btnP('New role','App._rpEdit(null)','plus'):''}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px">${cards||empty('shield','No roles yet','Create one to get started.')}</div>
+  </div>`;
 }
-const _rpSlug=g=>String(g).replace(/[^a-z0-9]/gi,'').toLowerCase();
-// Expand/collapse a single permission group in the editor.
-App._rpToggleGroup=(sg)=>{const b=document.getElementById('rpg-'+sg);if(!b)return;const open=b.style.display==='none';b.style.display=open?'flex':'none';const ch=document.getElementById('rpgch-'+sg);if(ch){ch.style.transform=open?'rotate(180deg)':'';const btn=ch.closest('button');if(btn)btn.setAttribute('aria-expanded',open?'true':'false');}};
-// Expand or collapse every group at once.
-App._rpExpandAll=(open)=>{document.querySelectorAll('[id^="rpg-"]').forEach(b=>{b.style.display=open?'flex':'none';});document.querySelectorAll('[id^="rpgch-"]').forEach(ch=>{ch.style.transform=open?'rotate(180deg)':'';const btn=ch.closest('button');if(btn)btn.setAttribute('aria-expanded',open?'true':'false');});};
-// Recompute the live "N on" badge per group from the current DOM toggles.
-App._rpGroupCounts=()=>{const editable=PERM_AREAS.filter(a=>a.key!=='accessControl');const by={};editable.forEach(a=>{const g=a.group||'System';(by[g]=by[g]||[]).push(a);});Object.keys(by).forEach(g=>{let cnt=0;by[g].forEach(a=>a.actions.forEach(act=>{if(togV('rp-act-'+a.key+'-'+act))cnt++;}));const el=document.getElementById('rpgc-'+_rpSlug(g));if(el)el.textContent=cnt+' on';});};
-// Reads the LIVE DOM toggles/scopes → rebuilds the summary line. Bound to onclick/onchange via event delegation.
-App._rpSummary=()=>{
-  const el=$('#rp-summary');if(!el)return;
-  const parts=[];
-  PERM_AREAS.filter(a=>a.key!=='accessControl').forEach(a=>{
-    const on=a.actions.filter(act=>togV('rp-act-'+a.key+'-'+act));
-    if(!on.length)return;
-    const sc=a.scoped?($('#rp-scope-'+a.key)?.value||'self'):null;
-    const scTxt=(a.scoped&&sc&&sc!=='none')?(' ('+SCOPE_LABEL[sc].toLowerCase()+')'):'';
-    parts.push(on.map(act=>(PERM_ACTION_LABEL[act]||act)).join(', ').toLowerCase()+' '+a.label.toLowerCase()+scTxt);
-  });
-  el.innerHTML='<strong>People with this profile can:</strong> '+(parts.length?esc(parts.join('; '))+'.':'nothing yet — toggle some permissions on.');
+App._rpEdit=(id)=>{
+  const ex=id?DB.roleProfiles[id]:null;
+  _RPD=ex?{...JSON.parse(JSON.stringify(ex)),isNew:false,dirty:false}
+        :{id:uid('role'),name:'',description:'',builtin:false,perms:{},isNew:true,dirty:false};
+  App._renderRPEdit();
 };
-// Starting-point preset: deep-clone a builtin's perms into the working set and re-render.
-App._rpApplyStart=(key)=>{
-  if(!key){_RP.perms={};}
-  else{const preset=DB.roleProfiles[key];_RP.perms=preset?JSON.parse(JSON.stringify(preset.perms||{})):{};}
-  // Preserve name/desc the admin already typed.
-  _RP.name=($('#rp-name')?.value||_RP.name);
-  _RP.description=($('#rp-desc')?.value||_RP.description);
-  const host=$('#rp-areas');if(host)host.innerHTML=_rpAreasHTML();
-  App._rpSummary();
+App._renderRPEdit=()=>{
+  const p=_RPD;if(!p)return;
+  const canMng=can('accessControl','manage'),dis=!canMng;
+  const lab='font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.06em';
+  const nUsers=p.isNew?0:DB.users.filter(u=>u.hrm?.roleProfileId===p.id).length;
+  const groups={};PERM_AREAS.forEach(a=>{(groups[a.group||'System']=groups[a.group||'System']||[]).push(a);});
+  const grid=Object.keys(groups).map(g=>{
+    const rowsH=groups[g].map(a=>{
+      const cur=p.perms[a.key]||{scope:'none',actions:{}};
+      const nOn=a.actions.filter(x=>(cur.actions||{})[x]).length;
+      return `<div style="display:grid;grid-template-columns:minmax(140px,200px) 1fr;gap:4px 12px;padding:8px 0;border-top:1px solid var(--c-border);align-items:center">
+        <div><div style="font-size:12px;font-weight:700;color:var(--c-text)">${esc(a.label)} ${nOn?`<span style="font-size:9px;font-weight:800;color:#0B7A55">${nOn} on</span>`:''}</div><div style="font-size:10px;color:var(--c-text-3);line-height:1.3">${esc(a.desc)}</div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center">
+          ${a.actions.map(act=>_acTogBtn(!!(cur.actions||{})[act],PERM_ACTION_LABEL[act]||act,`App._rpT('${a.key}','${act}')`,dis)).join('')}
+          ${a.scoped?`<span style="font-size:9.5px;color:var(--c-text-3)">sees:</span><select ${dis?'disabled':''} onchange="App._rpScope('${a.key}',this.value)" class="ui-select" style="width:auto;font-size:11px;padding:3px 24px 3px 8px;min-height:0;height:25px">${SCOPE_ORDER.map(s=>`<option value="${s}" ${((cur.scope||'none')===s)?'selected':''}>${SCOPE_LABEL[s]}</option>`).join('')}</select>`:''}
+        </div>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:8px"><div style="${lab};margin-bottom:2px">${esc(g)}</div>${rowsH}</div>`;
+  }).join('');
+  modalShell({title:p.isNew?'New role':('Role — '+(p.name||'Untitled')),sub:(nUsers?nUsers+' people have this role · ':'')+'toggles apply on Save',size:'max-w-3xl',
+    body:`<div>
+      ${p.dirty?'<div style="font-size:11.5px;font-weight:800;color:#92400E;background:#FEF3C7;border-radius:9px;padding:7px 11px;margin-bottom:12px">● Unsaved changes — press Save below</div>':''}
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:14px">
+        <div><label style="${lab}">Role name *</label><input ${dis?'disabled':''} type="text" value="${esc(p.name||'')}" oninput="_RPD.name=this.value;_RPD.dirty=true" placeholder="e.g. Branch Supervisor" class="ui-input rf" style="margin-top:5px"/></div>
+        <div><label style="${lab}">Description</label><input ${dis?'disabled':''} type="text" value="${esc(p.description||'')}" oninput="_RPD.description=this.value;_RPD.dirty=true" placeholder="What is this role for?" class="ui-input rf" style="margin-top:5px"/></div>
+      </div>
+      ${grid}
+    </div>`,
+    footer:btnG('Cancel','_RPD=null;App.closeModal()')+(canMng?btnP(p.isNew?'Create role':'Save role','App._rpSave()'):'')});
 };
-App.saveRoleProfile=()=>{
-  if(!isAdmin()||!_RP)return;
-  const name=($('#rp-name')?.value||'').trim();
-  if(!name){toast('Name required','err');return;}
-  const desc=($('#rp-desc')?.value||'').trim();
-  // Build sparse perms — omit areas with no enabled action AND scope none/self-default.
-  const perms={};
-  PERM_AREAS.filter(a=>a.key!=='accessControl').forEach(a=>{
-    const actions={};let any=false;
-    a.actions.forEach(act=>{if(togV('rp-act-'+a.key+'-'+act)){actions[act]=true;any=true;}});
-    const scope=a.scoped?($('#rp-scope-'+a.key)?.value||'none'):'none';
-    if(any)perms[a.key]={scope:a.scoped?scope:'none',actions};
-  });
-  const id=_RP.id||uid('rprof');
-  const prev=DB.roleProfiles[id];
-  DB.roleProfiles[id]={id,name,description:desc,builtin:prev?!!prev.builtin:false,perms};
-  saveDB();_syncRoleProfiles();closeModal();toast('Role profile saved');_RP=null;rr();
+App._rpT=(area,act)=>{
+  if(!can('accessControl','manage')||!_RPD)return;
+  const p=_RPD.perms[area]=_RPD.perms[area]||{scope:'none',actions:{}};
+  p.actions=p.actions||{};
+  const next=!p.actions[act];p.actions[act]=next;
+  if(next&&act!=='view'&&(PERM_AREAS.find(a=>a.key===area)||{actions:[]}).actions.includes('view')&&!p.actions.view)p.actions.view=true;
+  if(next&&(PERM_AREAS.find(a=>a.key===area)||{}).scoped&&(!p.scope||p.scope==='none'))p.scope='self';
+  _RPD.dirty=true;App._renderRPEdit();
 };
-// B2b: targeted role-profile push (don't wait for the debounced _sync) so edits reach the shared
-//   workspace_settings row immediately. Admin-only — matches the _sync write guard + RLS write-elevated.
+App._rpScope=(area,scope)=>{if(!can('accessControl','manage')||!_RPD)return;const p=_RPD.perms[area]=_RPD.perms[area]||{scope:'none',actions:{}};p.scope=scope;_RPD.dirty=true;App._renderRPEdit();};
+App._rpSave=()=>{
+  if(!can('accessControl','manage'))return toast('You need Access Control → Manage','err');
+  const p=_RPD;if(!p)return;
+  if(!(p.name||'').trim())return toast('Give the role a name','err');
+  // lockout: would this edit strip Access Control from its LAST holder(s)?
+  const ex=DB.roleProfiles[p.id];
+  if(ex){
+    for(const act of ['view','manage']){
+      const had=!!(ex.perms?.accessControl?.actions?.[act]);
+      const will=!!(p.perms?.accessControl?.actions?.[act]);
+      if(had&&!will){
+        const holders=DB.users.filter(u=>u.status==='Active'&&canUser(u,'accessControl',act));
+        const survivors=holders.filter(u=>{
+          const o=_userPermArea(u,'accessControl');
+          if(o)return !!(o.actions&&o.actions[act]);
+          return u.hrm?.roleProfileId!==p.id; // keeps it via a different role
+        });
+        if(holders.length&&!survivors.length)return toast('Blocked — removing Access Control ('+act+') from this role would lock everyone out. Grant it elsewhere first.','err');
+      }
+    }
+  }
+  const clean={id:p.id,name:p.name.trim(),description:p.description||'',builtin:!!(ex&&ex.builtin),_v:ex?ex._v:'3',perms:JSON.parse(JSON.stringify(p.perms||{}))};
+  DB.roleProfiles[p.id]=clean;
+  log(fullName(me()),p.isNew?'Role created':'Role updated',clean.name);
+  _RPD=null;
+  saveDB();_syncRoleProfiles();closeModal();toast('Role saved — applies to everyone assigned to it');rr();
+};
+App._rpDup=(id)=>{
+  if(!can('accessControl','manage'))return toast('You need Access Control → Manage','err');
+  const ex=DB.roleProfiles[id];if(!ex)return;
+  const copy=JSON.parse(JSON.stringify(ex));
+  copy.id=uid('role');copy.name=ex.name+' (copy)';copy.builtin=false;delete copy._v;
+  DB.roleProfiles[copy.id]=copy;
+  log(fullName(me()),'Role duplicated',ex.name);
+  saveDB();_syncRoleProfiles();toast('Role duplicated — edit the copy');rr();
+};
+App._rpDel=(id)=>{
+  if(!can('accessControl','manage'))return toast('You need Access Control → Manage','err');
+  const ex=DB.roleProfiles[id];if(!ex)return;
+  if(ex.builtin)return toast('Built-in roles can\'t be deleted (duplicate them instead)','err');
+  const n=DB.users.filter(u=>u.hrm?.roleProfileId===id).length;
+  if(n)return toast(n+' people still have this role — assign them another role first','err');
+  if(!confirm('Delete role "'+ex.name+'"?'))return;
+  delete DB.roleProfiles[id];
+  log(fullName(me()),'Role deleted',ex.name);
+  saveDB();_syncRoleProfiles();toast('Role deleted','warn');rr();
+};
 function _syncRoleProfiles(){
-  if(!isAdmin()||!sb||!DB.roleProfiles)return;
+  if(!can('accessControl','manage')||!sb||!DB.roleProfiles)return;
   sb.from('workspace_settings').upsert({key:'role_profiles',value:DB.roleProfiles,updated_at:new Date().toISOString()},{onConflict:'key'})
     .then(({error})=>{if(error)toast('Couldn\'t sync role profiles to server','err');}).catch(()=>toast('Couldn\'t sync role profiles to server','err'));
 }
-App.duplicateRoleProfile=(id)=>{
-  if(!isAdmin()){toast('Not permitted','err');return;}
-  const src=DB.roleProfiles[id];if(!src)return;
-  const nid=uid('rprof');
-  DB.roleProfiles[nid]={id:nid,name:src.name+' (copy)',description:src.description||'',builtin:false,perms:JSON.parse(JSON.stringify(src.perms||{}))};
-  saveDB();_syncRoleProfiles();toast('Profile duplicated');rr();
-};
-App.deleteRoleProfile=(id)=>{
-  if(!isAdmin()){toast('Not permitted','err');return;}
-  const p=DB.roleProfiles[id];if(!p)return;
-  if(p.builtin){toast('Built-in profiles cannot be deleted','err');return;}
-  const n=DB.users.filter(u=>u.hrm?.roleProfileId===id).length;
-  if(!confirm('Delete "'+p.name+'"?'+(n?(' '+n+' '+(n===1?'person':'people')+' will revert to their base-role access.'):'')))return;
-  // Null out assignment so affected users fall back to the base-role floor.
-  DB.users.forEach(u=>{if(u.hrm&&u.hrm.roleProfileId===id)u.hrm.roleProfileId=null;});
-  delete DB.roleProfiles[id];
-  saveDB();_syncRoleProfiles();toast('Profile deleted');rr();
-};
-
-// §3: App.useMyLocation removed — the profile-level geofence card no longer exists (geofence lives on Locations,
-// served by App.useMyLocationLoc). Kept as a no-op shim only to avoid stale onclick references elsewhere.
 App.addHoliday=(profId)=>{
   const date=$('#hol-date')?.value,name=($('#hol-name')?.value||'').trim();
   if(!date||!name){toast('Date & name required','err');return;}
