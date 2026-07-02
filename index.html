@@ -3595,7 +3595,7 @@ const HOW={
   lifecycle:{t:'Start a flow for a person → each step gets a real owner and a due date → owners tick them off and get reminded. The exit flow can suspend payroll automatically.',l:[['letters','Letters'],['payroll','Payroll'],['users','Users']]},
   discipline:{t:'Record a warning → the person and their manager are notified → it stays on file and expires by itself after 12 months.',l:[['users','Users'],['audit','Audit']]},
   payroll:{t:'Reads the month automatically: clock-ins = paid days, unpaid leave & unexplained absence = deducted, approved overtime = added. You just verify → HoP approves → Finalize creates payslips + the bank file. Salaries are set on each user\'s profile.',l:[['attendance','Attendance'],['leave','Leave'],['overtime','Overtime'],['users','Users']]},
-  accesscontrol:{t:'Two steps run everything: 1) a ROLE is a bundle of switches (which tabs, which buttons) — 2) give each person ONE role. That\'s all you normally need; per-person overrides are optional, under Advanced.',l:[['users','Users'],['audit','Audit']]},
+  accesscontrol:{t:'One rule runs everything: a ROLE is a bundle of switches (which tabs, which buttons) — give each person ONE role, done. “Customize” only holds personal facts: past/future submission rights, HR-approver stage, cities and document folders.',l:[['users','Users'],['audit','Audit']]},
   hrmconfig:{t:'Company-wide policy in one place: leave rules & holidays, alert thresholds (late, SLA, expiries), overtime caps, payroll cut-off, and the step templates for onboarding / probation / exit. Changes apply to everyone instantly.',l:[['payroll','Payroll'],['lifecycle','Lifecycle'],['leave','Leave']]},
   okr:{t:'Create an objective with a target and a check-in day → the owner gets it as a task on that day → their numbers roll up the tree (L2 → L1 → L0) and the graph shows planned pace vs reality.',l:[['mychecklists','My Checklists'],['dashboard','Dashboard']]},
 };
@@ -4000,13 +4000,10 @@ App.editUser=(id=null)=>{
     if(!can('employees','edit')||!scopeFilter('employees')(id)){toast('Not allowed','err');return;}
   }else if(!can('employees','create')){toast('Not allowed','err');return;}
   const u=id?uById(id):null;
-  // SEC-1: only a Super Admin may assign elevated roles. Non-admins can only set role 'User'
-  // (and may not change an existing elevated role — that is preserved verbatim in saveUser).
-  const roleOpts=isAdmin()?[['User','User'],['SubAdmin','Admin'],['Admin','Super Admin']]:[['User','User']];
-  const roleSelHtml=isAdmin()
-    ?selF('Role','u-role',roleOpts,u?.role||'User')
-    // Non-admin: show current role read-only and carry it on a hidden input so saveUser can preserve it.
-    :(`<div><label class="block text-xs font-semibold text-ink-500 mb-1">Role</label><div class="w-full bg-ink-50 border border-ink-200 rounded-xl px-3 py-2.5 text-sm text-ink-500">${esc(u?(u.role==='Admin'?'Super Admin':u.role==='SubAdmin'?'Admin':'User'):'User')}</div><input type="hidden" id="u-role" value="${esc(u?.role||'User')}"></div>`);
+  // ONE ROLE CONCEPT: the access role (Access Control → People) is the only role anyone sets.
+  // The legacy base-role field is derived from it automatically and shown read-only here.
+  const roleSelHtml=(()=>{const rid=u?.hrm?.roleProfileId;const rname=(DB.roleProfiles?.[rid]||{}).name||(u?roleLabel(u.role):'Basic Employee');
+    return `<div><label class="block text-xs font-semibold text-ink-500 mb-1">Access role</label><div class="w-full bg-ink-50 border border-ink-200 rounded-xl px-3 py-2.5 text-sm text-ink-500">${esc(rname)}</div><input type="hidden" id="u-role" value="${esc(u?.role||'User')}"><p style="font-size:11px;color:#9CA3AF;margin-top:4px">Set in <strong>Access Control → People</strong> — one dropdown decides everything this person sees.</p></div>`;})();
   const mgrOpts=DB.users.filter(x=>!u||x.id!==u.id&&!isDesc(x.id,u.id));
   const v=(f,d='')=>esc(u?u[f]??d:d);
   modalShell({title:`${u?'Edit':'New'} user`,size:'max-w-2xl',
@@ -10836,6 +10833,9 @@ App._acAssignRole=(uid2,roleId)=>{
     if(canUser(u,'accessControl',act)&&!newGrants(act)&&!_acLockoutSafe(u.id,act)){rr();return toast('Blocked — '+fullName(u)+' is the last person with Access Control ('+act+')','err');}
   }
   u.hrm.roleProfileId=roleId;u.hrm.permsV3=1;
+  // ONE role: derive the legacy base-role field from the access role so nothing is set twice.
+  const baseRole=roleId==='superadmin'?'Admin':roleId==='admin'?'SubAdmin':'User';
+  if(u.role!==baseRole){u.role=baseRole;sb.from('profiles').update({role:baseRole}).eq('id',u.id).then(()=>{}).catch(()=>{});}
   log(fullName(me()),'Role assigned',fullName(u)+' → '+(DB.roleProfiles[roleId].name||roleId));
   saveDB();_syncRoleProfiles();toast(fullName(u)+' → '+(DB.roleProfiles[roleId].name||roleId));rr();
 };
@@ -10928,13 +10928,10 @@ App._renderACUser=()=>{
     }).join('');
     return `<div style="margin-bottom:10px"><div style="${lab};margin-bottom:2px">${esc(g)}</div>${rowsH}</div>`;
   }).join('');
-  modalShell({title:'Access — '+fullName(u),sub:(role?('Role: '+role.name):'No role assigned')+' · changes apply on Save',size:'max-w-3xl',
+  modalShell({title:'Personal settings — '+fullName(u),sub:(role?('Role: '+role.name):'No role assigned')+' · changes apply on Save',size:'max-w-3xl',
     body:`<div>${d.dirty?'<div style="font-size:11.5px;font-weight:800;color:#92400E;background:#FEF3C7;border-radius:9px;padding:7px 11px;margin-bottom:12px">● Unsaved changes — press Save below</div>':''}
       ${personal}${docs}
-      <button onclick="_ACD.showOv=!_ACD.showOv;App._renderACUser()" style="display:inline-flex;align-items:center;gap:7px;border:1px dashed var(--c-border);background:var(--c-surface-2);border-radius:10px;padding:8px 14px;font-size:12px;font-weight:700;color:var(--c-text-2);cursor:pointer;margin-bottom:10px">
-        ${ic('cog','w-3.5 h-3.5')}Advanced — per-area overrides ${Object.keys(d.perms).length?`<span style="font-size:10px;font-weight:800;background:#FEF3C7;color:#92400E;border-radius:10px;padding:1px 7px">${Object.keys(d.perms).length} active</span>`:'(rarely needed)'} <span style="font-size:9px">${d.showOv?'▲':'▼'}</span>
-      </button>
-      ${d.showOv?`<div style="font-size:11px;color:var(--c-text-3);margin-bottom:8px">An override makes ONE area ignore the role for THIS person only. If you're not sure, you don't need it — change the role instead.</div>${ovCards}`:''}
+      ${Object.keys(d.perms).length?`<div style="font-size:11px;color:var(--c-text-3);background:var(--c-surface-2);border-radius:9px;padding:8px 11px">This person has ${Object.keys(d.perms).length} legacy exception(s) carried over from migration, so some areas ignore their role. <button onclick="_ACD.perms={};_acMark()" style="border:none;background:none;color:var(--c-danger-ink);font-weight:800;cursor:pointer;font-size:11px;padding:0">Clear them</button> so the role decides everything.</div>`:''}
     </div>`,
     footer:btnG('Cancel','_ACD=null;App.closeModal();rr()')+(canMng?btnP('Save changes','App._acSave()'):'')});
 };
