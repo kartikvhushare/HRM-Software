@@ -2009,7 +2009,7 @@ function shell(content){
           <div class="nav-brand" style="width:24px;height:24px;font-size:11px">B</div>
           <span class="fd" style="font-weight:800;font-size:15px">Bridge</span>
         </div>
-        <div style="flex:1"></div><button onclick="App._cmdk()" class="hidden md:inline-flex" style="align-items:center;gap:7px;padding:7px 14px;border-radius:10px;border:1px solid var(--c-border);background:var(--c-surface);color:var(--c-text-3);font-size:12px;font-weight:600;cursor:pointer">${ic('search','w-3.5 h-3.5')}Search… <span style="font-size:10px;font-weight:800;background:var(--c-surface-2);border-radius:5px;padding:1px 5px">⌘K</span></button>
+        <div style="flex:1"></div><button onclick="App._cmdk()" class="hidden md:flex" style="align-items:center;gap:8px;width:240px;padding:8px 12px;border-radius:12px;border:1px solid var(--c-border);background:var(--c-surface);color:var(--c-text-3);font-size:12.5px;font-weight:500;cursor:text;box-shadow:inset 0 1px 2px rgba(16,24,40,.04)">${ic('search','w-4 h-4')}<span style="flex:1;text-align:left">Search anything…</span><span style="font-size:10px;font-weight:800;background:var(--c-surface-2);border:1px solid var(--c-border);border-radius:6px;padding:1px 6px;color:var(--c-text-3)">⌘K</span></button>
         <button onclick="App.go('notifications')" class="md:hidden" aria-label="Notifications" style="position:relative;width:38px;height:38px;border-radius:10px;border:none;background:transparent;color:var(--c-text);display:grid;place-items:center;cursor:pointer">${ic('bell','w-5 h-5')}${(()=>{const n=_notifCount();return n?`<span style="position:absolute;top:5px;right:5px">${countBadge(n,'danger')}</span>`:'';})()}</button>
         <button onclick="App.go('profile')" class="md:hidden" aria-label="Profile">${avatar(u,'w-8 h-8','text-[11px]')}</button>
       </div>
@@ -2923,7 +2923,7 @@ function _flowStart(kind,userId,ownerPicks){
     let ownerId=(ownerPicks&&ownerPicks[i])||null;
     if(!ownerId){
       if(t.ownerType==='manager')ownerId=m?m.id:(hrs[0]||{}).id||null;
-      else if(t.ownerType==='hr')ownerId=(hrs[0]||{}).id||null;
+      else if(t.ownerType==='role'||t.ownerType==='hr'){const ru=DB.users.find(x=>x.status==='Active'&&x.hrm?.roleProfileId===(t.roleId||'hr'));ownerId=ru?ru.id:(hrs[0]||{}).id||null;}
       else if(t.ownerType==='dept'){const du=DB.users.find(x=>x.status==='Active'&&x.department===t.dept);ownerId=du?du.id:(hrs[0]||{}).id||null;}
     }
     if(t.ownerType==='manager')ownerId=m?m.id:ownerId;
@@ -2944,7 +2944,9 @@ App._flowNew=(kind)=>{
   const hrUsers=users.filter(u=>u.hrm?.isHR===true||u.hrm?.roleProfileId==='hr');
   const stepSel=(t,i)=>{
     if(t.ownerType==='manager')return `<span style="font-size:11px;color:var(--c-text-3)">their manager (automatic)</span>`;
-    const pool=t.ownerType==='hr'?(hrUsers.length?hrUsers:users):users.filter(u=>u.department===t.dept);
+    const pool=(t.ownerType==='role'||t.ownerType==='hr')
+      ?users.filter(u=>u.hrm?.roleProfileId===(t.roleId||'hr'))
+      :users.filter(u=>u.department===t.dept);
     return `<select id="fs-own-${i}" class="ui-select rf" style="min-height:0;height:30px;font-size:11.5px;padding:3px 22px 3px 8px">${(pool.length?pool:users).map(u=>`<option value="${u.id}">${esc(fullName(u))}</option>`).join('')}</select>`;
   };
   modalShell({title:'Start '+kind+' flow',size:'max-w-md',
@@ -3587,29 +3589,34 @@ function _alertsCfgHTML(){
   return `<div class="ui-card" style="padding:16px">
     <h3 class="fd" style="font-size:14px;font-weight:800;margin-bottom:4px">Alerts & event triggers</h3>
     <p style="font-size:11.5px;color:var(--c-text-3);margin-bottom:12px">Simple rule: each switch below = one automatic watchdog. Once a day the app checks, and if something is off it tells the person\'s manager and the People team (bell now, email once a provider is connected). Numbers set how strict each watchdog is.</p>
-    ${tog('late','Late arrival','Clock-in after schedule + grace')}
-    ${tog('missedClockIn','No clock-in','Not clocked in an hour past the late threshold')}
-    ${tog('leaveSLA','Leave SLA breach','Pending leave older than the SLA escalates to RM & HoP')}
-    ${num('slaDays','Leave SLA','work days')}
-    ${tog('docExpiry','Document expiry','Visa / passport / contract expiry reminders')}
-    ${num('docExpiryDays','Warn ahead of expiry','days')}
-    ${tog('probation','Probation ending','Nudge RM & HoP to run the probation review')}
-    ${num('probationDays','Warn before probation end','days')}
-    ${tog('benefits','Air-ticket benefit','Anniversary entitlement reached')}
-    ${num('benefitMonths','Entitlement at','months')}
-    <div style="border-top:1px dashed var(--c-border);margin:12px 0 10px"></div>
-    ${num('otWeeklyCap','Overtime weekly cap','hours')}
-    ${num('otMultiplier','Overtime pay multiplier','×')}
-    ${num('payrollCutoff','Payroll cut-off day','of month')}
+    ${tog('late','Late arrival alert','If someone clocks in later than their start time + grace minutes → their manager and the People team get an alert that day.')}
+    ${tog('missedClockIn','Missing clock-in alert','If someone has not clocked in at all by about an hour past the late threshold → manager + People team are alerted.')}
+    ${tog('leaveSLA','Stuck leave request alert','If a leave request stays Pending longer than the working days set below → it escalates to the manager AND Head of People.')}
+    ${num('slaDays','Escalate pending leave after','working days')}
+    ${tog('docExpiry','Document expiry reminders','When a personal document (visa, passport, contract) is close to its expiry date → the person and the People team are reminded until it\'s handled.')}
+    ${num('docExpiryDays','Start reminding before expiry','days')}
+    ${tog('probation','Probation-ending nudge','When someone\'s probation end date is near → manager + People team are nudged to run the probation review flow.')}
+    ${num('probationDays','Nudge before probation ends','days')}
+    ${tog('benefits','Air-ticket anniversary','When someone completes the months of service set below → they and the People team are told the ticket benefit is due.')}
+    ${num('benefitMonths','Benefit due after','months')}
+    <div style="border-top:1px dashed var(--c-border);margin:12px 0 6px"></div>
+    <div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Limits used by Overtime & Payroll</div>
+    ${num('otWeeklyCap','Most overtime a person can log per week','hours')}
+    ${num('otMultiplier','Overtime is paid at (× hourly rate)','×')}
+    ${num('payrollCutoff','Attendance is verified up to day','of month')}
   </div>`;
 }
 function _flowTplCfgHTML(){
   _seedHRMPlan();const T=DB.hrmConfig.flowTemplates;const canEdit=can('hrSettings','edit');
   const kind=S.filters.ftKind||'onboarding';
-  const rows=(T[kind]||[]).map((s2,i)=>`<div style="display:grid;grid-template-columns:2fr 110px 110px 120px 64px 28px;gap:6px;align-items:center;margin-bottom:6px">
+  const rows=(T[kind]||[]).map((s2,i)=>`<div style="display:grid;grid-template-columns:2fr 110px 130px 120px 64px 28px;gap:6px;align-items:center;margin-bottom:6px">
     <input ${canEdit?'':'disabled'} value="${esc(s2.title)}" onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].title=this.value;saveDB()" class="ui-input" style="min-height:0;height:32px;padding:4px 10px;font-size:12px"/>
-    <select ${canEdit?'':'disabled'} onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].ownerType=this.value;saveDB();rr()" class="ui-select" style="min-height:0;height:32px;font-size:11.5px;padding:4px 22px 4px 8px">${['hr','manager','dept'].map(o=>`<option ${s2.ownerType===o?'selected':''}>${o}</option>`).join('')}</select>
-    <input ${canEdit&&s2.ownerType==='dept'?'':'disabled'} value="${esc(s2.dept||'')}" placeholder="Dept name" onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].dept=this.value;saveDB()" class="ui-input" style="min-height:0;height:32px;padding:4px 10px;font-size:12px"/>
+    <select ${canEdit?'':'disabled'} onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].ownerType=this.value;saveDB();rr()" class="ui-select" style="min-height:0;height:32px;font-size:11.5px;padding:4px 22px 4px 8px">${[['manager','Manager'],['role','Role'],['dept','Department'],['hr','Role: HR (legacy)']].filter(o=>o[0]!=='hr'||s2.ownerType==='hr').map(o=>`<option value="${o[0]}" ${s2.ownerType===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select>
+    ${s2.ownerType==='role'||s2.ownerType==='hr'
+      ?`<select ${canEdit?'':'disabled'} onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].roleId=this.value;DB.hrmConfig.flowTemplates['${kind}'][${i}].ownerType='role';saveDB();rr()" class="ui-select" style="min-height:0;height:32px;font-size:11.5px;padding:4px 22px 4px 8px">${Object.values(DB.roleProfiles||{}).map(r=>`<option value="${r.id}" ${(s2.roleId||'hr')===r.id?'selected':''}>${esc(r.name)}</option>`).join('')}</select>`
+      :s2.ownerType==='dept'
+      ?`<select ${canEdit?'':'disabled'} onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].dept=this.value;saveDB()" class="ui-select" style="min-height:0;height:32px;font-size:11.5px;padding:4px 22px 4px 8px"><option value="">— pick —</option>${(DB.departments||[]).map(dp=>`<option ${s2.dept===dp.name?'selected':''}>${esc(dp.name)}</option>`).join('')}</select>`
+      :`<span style="font-size:10.5px;color:var(--c-text-3)">colleague\'s manager</span>`}
     <select ${canEdit?'':'disabled'} onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].type=this.value;saveDB()" class="ui-select" style="min-height:0;height:32px;font-size:11.5px;padding:4px 22px 4px 8px">${['task','form','letter','payrollHold'].map(o=>`<option ${s2.type===o?'selected':''}>${o}</option>`).join('')}</select>
     <input ${canEdit?'':'disabled'} type="number" min="0" value="${Number(s2.offsetDays)||0}" title="Due after N days" onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].offsetDays=parseInt(this.value)||0;saveDB()" class="ui-input" style="min-height:0;height:32px;padding:4px 8px;font-size:12px"/>
     ${canEdit?`<button onclick="DB.hrmConfig.flowTemplates['${kind}'].splice(${i},1);saveDB();rr()" style="width:26px;height:26px;border:none;background:transparent;color:var(--c-text-3);cursor:pointer">${ic('trash','w-3.5 h-3.5')}</button>`:'<span></span>'}
@@ -3617,7 +3624,7 @@ function _flowTplCfgHTML(){
   return `<div class="ui-card" style="padding:16px">
     <h3 class="fd" style="font-size:14px;font-weight:800;margin-bottom:10px">Lifecycle flow templates</h3>
     <div class="ui-tabs" style="margin-bottom:12px">${['onboarding','probation','exit'].map(k=>`<button class="ui-tab${kind===k?' on':''}" onclick="S.filters.ftKind='${k}';rr()">${k[0].toUpperCase()+k.slice(1)}</button>`).join('')}</div>
-    <div style="display:grid;grid-template-columns:2fr 110px 110px 120px 64px 28px;gap:6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;margin-bottom:5px"><span>Step</span><span>Owner</span><span>Dept</span><span>Type</span><span>+days</span><span></span></div>
+    <div style="display:grid;grid-template-columns:2fr 110px 130px 120px 64px 28px;gap:6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;margin-bottom:5px"><span>Step</span><span>Owner type</span><span>Which role / dept</span><span>Type</span><span>+days</span><span></span></div>
     ${rows||'<p style="font-size:12px;color:var(--c-text-3)">No steps yet.</p>'}
     ${canEdit?`<button onclick="DB.hrmConfig.flowTemplates['${kind}'].push({title:'New step',ownerType:'hr',type:'task',offsetDays:0,dept:''});saveDB();rr()" class="ui-btn ui-btn-ghost ui-btn-sm" style="margin-top:6px">${ic('plus','w-3.5 h-3.5')}Add step</button>`:''}
   </div>`;
@@ -9389,7 +9396,7 @@ function settingsPage(){
   const TABS=[['workflow','Workflow'],['inapp','In-App'],['email','Email']];
   if(can('settings','edit'))TABS.push(['hrmemail','HR Email']); // §4 (FRONTEND-ONLY prefs)
   TABS.push(['templates','Templates']);
-  const tabBar=`<div style="margin-bottom:20px">${chipBar(TABS,stab,'App._setSTab')}</div>`;
+  const tabBar=`<div class="ui-tabs" style="margin-bottom:20px">${TABS.map(([k,ll])=>`<button class="ui-tab${stab===k?' on':''}" onclick="App._setSTab('${k}')">${ll}</button>`).join('')}</div>`;
 
   const workflowTab=`<div class="space-y-4">
     <div class="bg-white rounded-2xl border border-ink-100 shadow-soft p-5">
@@ -11183,9 +11190,7 @@ App._renderACUser=()=>{
         ${_acTogBtn(ap.future===true,'Future-dated entry',`App._acAppr('future')`,dis)}
         ${_acTogBtn(ap.edited===true,'Edited entry',`App._acAppr('edited')`,dis)}
       </div></div>
-      <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">HR approver stage</div>
-        <div style="font-size:11.5px;color:var(--c-text-2);line-height:1.5">${d.isHR?'✓ Yes — this person has the <b>HR role</b>, so they act as the HR (2nd) stage in leave approvals.':'No — give them the <b>HR role</b> (in the People table) to make them an HR approver.'}</div>
-      </div>
+
       <div><div style="font-size:12px;font-weight:700;margin-bottom:6px;color:var(--c-text)">City access <span style="font-weight:500;color:var(--c-text-3)">(none = all)</span></div>
         <div style="display:flex;flex-wrap:wrap;gap:5px">${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>_acTogBtn((d.cities||[]).includes(l.id),l.name,`App._acCity('${l.id}')`,dis)).join('')||'<span style="font-size:11px;color:var(--c-text-3)">No locations.</span>'}</div>
       </div>
