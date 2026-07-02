@@ -905,6 +905,13 @@ async function loadFromSB(){
       if(error){console.warn('[OKR] logs load skipped:',error.message);return;}
       DB.okrLogs=_mOKRLog(data);saveDB();rr();
     }).catch(e=>console.warn('[OKR] logs fetch failed:',e.message));
+  // ── HRM plan tables (same defensive targeted-load pattern) ──
+  [['flows','flows',_mFlow],['letters','letters',_mLetter],['discipline','discipline',_mDisc],['overtime','overtime',_mOT],['payroll_runs','payrollRuns',_mPRun],['payroll_items','payrollItems',_mPItem]].forEach(([tbl,key,map])=>{
+    sb.from(tbl).select('*').then(({data,error})=>{
+      if(error){console.warn('['+tbl+'] load skipped:',error.message);return;}
+      DB[key]=map(data);saveDB();rr();
+    }).catch(e=>console.warn('['+tbl+'] fetch failed:',e.message));
+  });
 
   // ── HRM (Approach A): config singleton, reference tables fully, attendance windowed (90d). ──
   // RLS restricts rows server-side; the client maps whatever comes back. Runs async (non-blocking)
@@ -1141,6 +1148,8 @@ let DB={
   // ── OKR v2 (hierarchical objectives) — okrs = tree nodes, okrCheckins = scheduled progress
   //    updates (value + comment + photos), okrLogs = per-OKR activity trail (every edit is logged).
   okrs:[],okrCheckins:[],okrLogs:[],
+  // ── HRM build plan (targeted writes, like OKRs) ──
+  flows:[],letters:[],discipline:[],overtime:[],payrollRuns:[],payrollItems:[],
   // ── HRM (Attendance & Leave) — FRONTEND-ONLY, never added to _sync()/loadFromSB() table lists ──
   hrmConfig:{},     // company/country policy profiles
   attendance:[],    // attendance day records (one per user per date)
@@ -1229,7 +1238,7 @@ function loadDB(){
     const r=localStorage.getItem(LS_KEY);
     if(!r)return false;
     const p=JSON.parse(r);if(!p.DB)return false;DB=p.DB;
-    ['users','departments','locations','checklists','submissions','approvals','feedback','folders','documents','audit','notifications','questions','checklists_deleted','questions_deleted','folders_deleted','documents_deleted','users_deleted','departments_deleted','locations_deleted','attendance','leaveTypes','leaveRequests','leaveBalances','holidays','hrmAudit','announcements','shifts','okrs','okrCheckins','okrLogs'].forEach(k=>{if(!DB[k])DB[k]=[];});
+    ['users','departments','locations','checklists','submissions','approvals','feedback','folders','documents','audit','notifications','questions','checklists_deleted','questions_deleted','folders_deleted','documents_deleted','users_deleted','departments_deleted','locations_deleted','attendance','leaveTypes','leaveRequests','leaveBalances','holidays','hrmAudit','announcements','shifts','okrs','okrCheckins','okrLogs','flows','letters','discipline','overtime','payrollRuns','payrollItems'].forEach(k=>{if(!DB[k])DB[k]=[];});
     // OKR v2 migration: drop the retired question-linked OKR model from stale localStorage.
     // Old rows are recognisable by having no metricType (they carried questionId/rollup instead).
     DB.okrs=(DB.okrs||[]).filter(o=>o&&o.metricType);
@@ -1240,6 +1249,7 @@ function loadDB(){
     try{_permsV3Migrate();}catch(e){console.warn('[perms] migrate skipped:',e.message);} // perms v3
     // §4: HR email/notification prefs — DB-only key (FRONTEND-ONLY, never in workspace_settings/Supabase).
     DB.hrmNotifPrefs={..._hrmNotifPrefsDefault(),...(DB.hrmNotifPrefs&&typeof DB.hrmNotifPrefs==='object'?DB.hrmNotifPrefs:{})};
+    try{_seedHRMPlan();}catch(e){}
     DB.users.forEach(u=>{
       if(!u.rules)u.rules={past:true,future:true,edit:true};
       // Ensure individual rule fields have proper defaults (true, not false)
@@ -1322,6 +1332,11 @@ function _ensureHrm(u){
   //   positive days = grant, negative days = removal. Remaining computed honoring each grant's own expiry
   //   (independent of carry-over's carriedExpiry). Rides on u.hrm → synced via the user_hrm table.
   if(!Array.isArray(h.compOff))h.compOff=[];
+  // HRM build plan: salary & payroll fields (payslips, WPS), probation date, payroll hold (exit flow)
+  if(!h.salary||typeof h.salary!=='object')h.salary={basic:0,allow:0,currency:'AED'};
+  if(h.iban===undefined)h.iban='';
+  if(h.probationEnd===undefined)h.probationEnd=null;
+  if(h.payrollHold===undefined)h.payrollHold=false;
   // §7: personal documents (frontend-only). Each entry: {id,name,type,size,uploadedAt,uploadedBy,dataUrl|null}
   //   Metadata persists in localStorage; the base64 dataUrl is STRIPPED in saveDB (mirrors photo stripping)
   //   so localStorage never bloats — real durable bytes are a backend connection point (lost on reload).
@@ -1373,12 +1388,18 @@ const PERM_AREAS=[
   {key:'locations',label:'Locations',desc:'Offices and GPS boundary',actions:['view','create','edit','manage'],scoped:false,group:'System'},
   {key:'departments',label:'Departments',desc:'Department list',actions:['view','create','edit'],scoped:false,group:'System'},
   {key:'approvals',label:'Approvals inbox',desc:'The unified approvals page (what they can act on is still per-area)',actions:['view'],scoped:false,group:'System'},
+  {key:'scheduling',label:'Shifts / Roster',desc:'The weekly shift roster',actions:['view','manage'],scoped:true,group:'Leave & Attendance'},
+  {key:'overtime',label:'Overtime',desc:'Log extra hours; weekly review, pay or time-in-lieu',actions:['view','submit','approve'],scoped:true,group:'Leave & Attendance'},
+  {key:'lifecycle',label:'Lifecycle flows',desc:'Onboarding, probation & exit checklists',actions:['view','manage'],scoped:true,group:'People & Org'},
+  {key:'discipline',label:'Discipline',desc:'Warnings on file (12-month retention)',actions:['view','manage'],scoped:true,group:'People & Org'},
+  {key:'letters',label:'Letters',desc:'Request, approve & issue HR letters from templates',actions:['view','create','approve','issue'],scoped:true,group:'Content'},
+  {key:'payroll',label:'Payroll',desc:'Runs, verification, payslips, WPS export',actions:['view','verify','run','approve','finalize','rollback','download'],scoped:false,group:'Payroll'},
   {key:'audit',label:'Audit / Activity log',desc:'History of actions',actions:['view'],scoped:false,group:'System'},
   {key:'settings',label:'Settings',desc:'App settings',actions:['view','edit'],scoped:false,group:'System'},
   {key:'accessControl',label:'Access Control',desc:'The role-profile system itself',actions:['view','manage'],scoped:false,group:'System'},
 ];
 // Plain-language labels used by the Access Control editor + live summary.
-const PERM_ACTION_LABEL={view:'View',create:'Create',edit:'Edit',delete:'Delete',deactivate:'Deactivate',approve:'Approve',download:'Download / Export',manage:'Manage',manageSettings:'Manage settings',assign:'Assign',assignRole:'Assign role profile',assignManager:'Assign manager',grant:'Grant / Remove',submit:'Submit',upload:'Upload',manageGeofence:'Manage geofence'};
+const PERM_ACTION_LABEL={view:'View',create:'Create',edit:'Edit',delete:'Delete',deactivate:'Deactivate',approve:'Approve',download:'Download / Export',manage:'Manage',manageSettings:'Manage settings',assign:'Assign',assignRole:'Assign role profile',assignManager:'Assign manager',grant:'Grant / Remove',submit:'Submit',upload:'Upload',manageGeofence:'Manage geofence',issue:'Issue',verify:'Verify',run:'Run',finalize:'Finalize',rollback:'Roll back'};
 const SCOPE_ORDER=['none','self','team','department','location','everyone'];
 const SCOPE_LABEL={none:'None',self:'Only their own',team:'Their team',department:'Their department',location:'Their office',everyone:'Everyone'};
 const _areaByKey=k=>PERM_AREAS.find(a=>a.key===k);
@@ -1411,6 +1432,11 @@ function _seedRoleProfiles(){
       approvals:A('none','view'),
       okr:A('none','view','create','edit','manage'),
       analytics:A('none','view'),
+      scheduling:A('team','view','manage'),
+      overtime:A('team','view','submit','approve'),
+      lifecycle:A('team','view'),
+      discipline:A('team','view'),
+      letters:A('self','view','create'),
     }},
     hr:{id:'hr',name:'HR',description:'The HR modules: attendance, leave & balances, HR settings, HRM analytics, document approvals.',builtin:true,perms:{
       dashboard:A('none','view'),
@@ -1428,6 +1454,12 @@ function _seedRoleProfiles(){
       announcements:A('none','view','create'),
       approvals:A('none','view'),
       okr:A('none','view'),
+      scheduling:A('everyone','view','manage'),
+      overtime:A('everyone','view','submit','approve'),
+      lifecycle:A('everyone','view','manage'),
+      discipline:A('everyone','view','manage'),
+      letters:A('everyone','view','create','approve','issue'),
+      payroll:{scope:'none',actions:{view:true,verify:true,run:true,download:true}},
     }},
     basic:{id:'basic',name:'Basic Employee',description:'A standard employee — their own checklists, attendance, leave and tickets.',builtin:true,perms:{
       dashboard:A('none','view'),
@@ -1440,9 +1472,12 @@ function _seedRoleProfiles(){
       documentsPersonal:A('self','view','create','download'),
       announcements:A('none','view'),
       okr:A('none','view'),
+      scheduling:A('self','view'),
+      overtime:A('self','view','submit'),
+      letters:A('self','view','create'),
     }},
   };
-  const V='3';
+  const V='4'; // v4: HRM plan areas (shifts, overtime, lifecycle, discipline, letters, payroll)
   Object.values(presets).forEach(p=>{
     const cur=DB.roleProfiles[p.id];
     if(!cur||(cur.builtin&&cur._v!==V)){p._v=V;DB.roleProfiles[p.id]=p;} // upgrade built-ins once; never touch custom roles
@@ -1790,6 +1825,12 @@ const NAV_ALL=[
   ['allcl','list','All Checklists',()=>can('allChecklists','view')],
   ['questions','help','Questions',()=>can('questions','view')],
   ['approvals','approve','Approvals',()=>can('approvals','view')],
+  ['overtime','clock','Overtime',()=>can('overtime','view')],
+  ['shifts','clock','Shifts',()=>can('scheduling','view')],
+  ['lifecycle','users','Lifecycle',()=>can('lifecycle','view')],
+  ['letters','doc','Letters',()=>can('letters','view')],
+  ['discipline','alert','Discipline',()=>can('discipline','view')],
+  ['payroll','chart','Payroll',()=>can('payroll','view')],
   ['notifications','bell','Notifications',()=>true],
   ['okr','chart','OKRs',()=>can('okr','view')],
   ['hrmanalytics','chart','HRM Analytics',()=>can('reports','view')],
@@ -1809,13 +1850,13 @@ const navFor=()=>NAV_ALL.filter(n=>{try{return !!n[3]();}catch(e){return false;}
 const NAV_DAILY=['dashboard','approvals','leave','attendance','tickets','mychecklists','notifications'];
 const NAV_SECTION_OF={
   // Work
-  mychecklists:'__daily',checklists:'Work',allcl:'Work',questions:'Work',announcements:'Work',
+  mychecklists:'__daily',checklists:'Work',allcl:'Work',questions:'Work',announcements:'Work',shifts:'Work',letters:'Work',overtime:'Work',
   // People
-  users:'People',teamview:'People',hierarchy:'People',
+  users:'People',teamview:'People',hierarchy:'People',lifecycle:'People',discipline:'People',
   // Insights
   analytics:'Insights',hrmanalytics:'Insights',okr:'Insights',
   // Setup
-  hrmconfig:'Setup',locations:'Setup',departments:'Setup',settings:'Setup',audit:'Setup',accesscontrol:'Setup',
+  hrmconfig:'Setup',locations:'Setup',departments:'Setup',settings:'Setup',audit:'Setup',accesscontrol:'Setup',payroll:'Setup',
 };
 const NAV_SECTION_ORDER=['Work','People','Insights','Setup'];
 const NAV_SECTION_ICON={Work:'list',People:'users',Insights:'chart',Setup:'cog'};
@@ -2055,6 +2096,12 @@ function pageContent(){
   if(r==='schedule'||r==='myschedule'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   // Expenses feature retired — redirect any lingering #expenses deep-link to the home dashboard.
   if(r==='expenses'){S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
+  if(r==='overtime'){if(can('overtime','view'))return overtimePage();S.route='mychecklists';return myClsPage();}
+  if(r==='shifts'){if(can('scheduling','view'))return shiftsPage();S.route='mychecklists';return myClsPage();}
+  if(r==='lifecycle'){if(can('lifecycle','view'))return lifecyclePage();S.route='mychecklists';return myClsPage();}
+  if(r==='letters'){if(can('letters','view'))return lettersPage();S.route='mychecklists';return myClsPage();}
+  if(r==='discipline'){if(can('discipline','view'))return disciplinePage();S.route='mychecklists';return myClsPage();}
+  if(r==='payroll'){if(can('payroll','view'))return payrollPage();S.route='mychecklists';return myClsPage();}
   if(r==='okr'){if(can('okr','view'))return okrPage();S.route='dashboard';if(isAdmin())return adminDash();if(isMgr())return mgrDash();S.route='mychecklists';return myClsPage();}
   return empty('grid','Not found','');
 }
@@ -2655,6 +2702,827 @@ function _drawOKRCharts(){
     }catch(e){fail("Couldn't draw chart.");}
   });
 }
+/* ═══════════════ HRM BUILD PLAN — Phases 0–3 + benefits (self-contained on Supabase) ═══════════════
+   Modules: notify()+email outbox · event triggers · who's-in widget · WFH tag · doc expiry ·
+   lifecycle flows (onboarding/probation/exit) · letters · discipline · overtime (pay / time-in-lieu
+   → comp-off ledger) · shift roster (revived) · payroll (verify → run → approve → finalize,
+   payslips, WPS CSV, rollback, variance) · reports hub · air-ticket benefit trigger.
+   All writes are TARGETED (OKR pattern) — none of these tables join the whole-table _sync batch. */
+
+/* ── mappers + targeted writers ── */
+function _mFlow(r){return(r||[]).map(f=>({id:f.id,kind:f.kind||'onboarding',userId:f.user_id,status:f.status||'Active',steps:Array.isArray(f.steps)?f.steps:[],createdBy:f.created_by||null,createdAt:f.created_at,completedAt:f.completed_at||null}));}
+function _flowRow(f){return{id:f.id,kind:f.kind,user_id:f.userId,status:f.status||'Active',steps:f.steps||[],created_by:f.createdBy||null,created_at:f.createdAt||new Date().toISOString(),completed_at:f.completedAt||null};}
+function _mLetter(r){return(r||[]).map(l=>({id:l.id,userId:l.user_id,type:l.type||'',title:_unesc(l.title)||'',body:_unesc(l.body)||'',status:l.status||'Requested',requestedBy:l.requested_by||null,approverId:l.approver_id||null,decidedAt:l.decided_at||null,issuedAt:l.issued_at||null,note:_unesc(l.note)||'',createdAt:l.created_at}));}
+function _letterRow(l){return{id:l.id,user_id:l.userId,type:l.type||'',title:l.title||'',body:l.body||'',status:l.status||'Requested',requested_by:l.requestedBy||null,approver_id:l.approverId||null,decided_at:l.decidedAt||null,issued_at:l.issuedAt||null,note:l.note||'',created_at:l.createdAt||new Date().toISOString()};}
+function _mDisc(r){return(r||[]).map(d=>({id:d.id,userId:d.user_id,level:d.level||'Verbal',reason:_unesc(d.reason)||'',note:_unesc(d.note)||'',issuedBy:d.issued_by||null,createdAt:d.created_at,expiresAt:d.expires_at||null}));}
+function _discRow(d){return{id:d.id,user_id:d.userId,level:d.level,reason:d.reason||'',note:d.note||'',issued_by:d.issuedBy||null,created_at:d.createdAt||new Date().toISOString(),expires_at:d.expiresAt||null};}
+function _mOT(r){return(r||[]).map(o=>({id:o.id,userId:o.user_id,date:o.date,hours:Number(o.hours||0),reason:_unesc(o.reason)||'',status:o.status||'Pending',comp:o.comp||null,decidedBy:o.decided_by||null,decidedAt:o.decided_at||null,decisionNote:_unesc(o.decision_note)||'',createdAt:o.created_at}));}
+function _otRow(o){return{id:o.id,user_id:o.userId,date:o.date,hours:o.hours||0,reason:o.reason||'',status:o.status||'Pending',comp:o.comp||null,decided_by:o.decidedBy||null,decided_at:o.decidedAt||null,decision_note:o.decisionNote||'',created_at:o.createdAt||new Date().toISOString()};}
+function _mPRun(r){return(r||[]).map(p=>({id:p.id,month:p.month,status:p.status||'Draft',cutoffDay:p.cutoff_day||23,totals:p.totals||{},sign:p.sign||{},createdBy:p.created_by||null,createdAt:p.created_at}));}
+function _pRunRow(p){return{id:p.id,month:p.month,status:p.status||'Draft',cutoff_day:p.cutoffDay||23,totals:p.totals||{},sign:p.sign||{},created_by:p.createdBy||null,created_at:p.createdAt||new Date().toISOString()};}
+function _mPItem(r){return(r||[]).map(i=>({id:i.id,runId:i.run_id,userId:i.user_id,basic:Number(i.basic||0),allowances:Number(i.allowances||0),otAmount:Number(i.ot_amount||0),deductions:Number(i.deductions||0),unpaidDays:Number(i.unpaid_days||0),net:Number(i.net||0),detail:i.detail||{},verified:i.verified===true,verifiedBy:i.verified_by||null}));}
+function _pItemRow(i){return{id:i.id,run_id:i.runId,user_id:i.userId,basic:i.basic||0,allowances:i.allowances||0,ot_amount:i.otAmount||0,deductions:i.deductions||0,unpaid_days:i.unpaidDays||0,net:i.net||0,detail:i.detail||{},verified:i.verified===true,verified_by:i.verifiedBy||null};}
+function _pushRow(table,row,label){sb.from(table).upsert(row,{onConflict:'id'}).then(({error})=>{if(error)_syncErr(label)(error);}).catch(_syncErr(label));}
+function _delRow(table,id,label){sb.from(table).delete().eq('id',id).then(({error})=>{if(error)_syncErr(label)(error);}).catch(_syncErr(label));}
+
+/* ── unified notify: in-app always + email queued to notif_outbox (drained by an edge function
+      once an email provider is connected — the queue itself is fully self-contained) ── */
+function notify(userId,text,kind,route){
+  if(!userId||!text)return;
+  DB.notifications.unshift({id:uid('n'),userId:userId,text:text,time:new Date().toISOString(),read:false,kind:kind||'hrm',targetRoute:route||null});
+  const u=uById(userId);
+  if(u&&u.email&&u.emailEnabled!==false){
+    sb.from('notif_outbox').insert({id:uid('ob'),to_user:userId,to_email:u.email,subject:text.replace(/[\u{1F300}-\u{1FAFF}]/gu,'').trim().slice(0,140),body:text,kind:kind||'general',status:'queued',created_at:new Date().toISOString()}).then(()=>{}).catch(()=>{});
+  }
+}
+function _notifyOnce(userId,text,kind,route){
+  const dup=(DB.notifications||[]).some(n=>n.userId===userId&&n.text===text&&String(n.time||'').slice(0,10)===todayISO());
+  if(!dup)notify(userId,text,kind,route);
+}
+const _hrUsers=()=>DB.users.filter(u=>u.status==='Active'&&(u.hrm?.isHR===true||u.hrm?.roleProfileId==='hr'));
+const _mgrOf=u=>u&&u.managerId?uById(u.managerId):null;
+
+/* ── HRM-plan config seeds (flow + letter templates, alert settings — live in hrm_config, synced) ── */
+function _seedHRMPlan(){
+  const C=DB.hrmConfig=DB.hrmConfig||{};
+  if(!C.alerts||typeof C.alerts!=='object')C.alerts={late:true,missedClockIn:true,leaveSLA:true,slaDays:3,docExpiry:true,docExpiryDays:30,probation:true,probationDays:7,benefits:true,benefitMonths:24,otWeeklyCap:10,otMultiplier:1.25,payrollCutoff:23};
+  if(!C.flowTemplates||typeof C.flowTemplates!=='object'){
+    const s=(title,ownerType,type,offsetDays,dept)=>({title,ownerType,type:type||'task',offsetDays:offsetDays||0,dept:dept||''});
+    C.flowTemplates={
+      onboarding:[s('Prepare & issue offer letter','hr','letter',0),s('IT setup — laptop, email & accounts','dept','task',1,'IT'),s('Design intro & brand walkthrough','dept','task',2,'Design'),s('Desk, supplies & access card','dept','task',1,'Procurement'),s('Collect documents (passport, visa, contracts)','hr','task',3),s('Probation plan agreed with colleague','manager','task',5)],
+      probation:[s('Probation evaluation form','manager','form',0),s('Head of People review','hr','form',2),s('Confirmation / fail decision letter','hr','letter',4)],
+      exit:[s('Resignation acknowledged in writing','hr','task',0),s('Exit interview','hr','form',3),s('Handover of work & assets','manager','task',7),s('IT deactivation — accounts & devices','dept','task',10,'IT'),s('Visa cancellation','hr','task',12),s('Payroll suspension','hr','payrollHold',12)],
+    };
+  }
+  if(!C.letterTemplates||typeof C.letterTemplates!=='object'){
+    C.letterTemplates={
+      salary_cert:{name:'Salary Certificate',body:'To whom it may concern,\n\nThis is to certify that {name} (employee of {company}) holds the position of {position} in our {department} department since {joined}, drawing a monthly salary of {salary}.\n\nThis certificate is issued upon the employee\'s request.\n\nHR Department\n{company} · {date}'},
+      noc:{name:'No Objection Certificate (NOC)',body:'To whom it may concern,\n\nWe have no objection to {name}, employed as {position}, for the purpose stated in their request.\n\nHR Department\n{company} · {date}'},
+      confirmation:{name:'Probation Confirmation',body:'Dear {name},\n\nWe are pleased to confirm your employment as {position} following the successful completion of your probation period.\n\nHR Department\n{company} · {date}'},
+      probation_fail:{name:'Probation Not Confirmed',body:'Dear {name},\n\nFollowing the review of your probation period as {position}, we regret to inform you that your employment will not be confirmed.\n\nHR Department\n{company} · {date}'},
+      offer:{name:'Offer Letter',body:'Dear {name},\n\nWe are delighted to offer you the position of {position} in our {department} department with a monthly salary of {salary}, starting {joined}.\n\nHR Department\n{company} · {date}'},
+      warning:{name:'Warning Letter',body:'Dear {name},\n\nThis letter serves as a formal warning regarding your conduct/performance. Please treat this with utmost seriousness.\n\nHR Department\n{company} · {date}'},
+    };
+  }
+}
+function _fillLetter(tpl,u){
+  const sal=u.hrm?.salary||{};const cur=sal.currency||'AED';
+  return String(tpl||'')
+    .replace(/\{name\}/g,fullName(u)).replace(/\{position\}/g,u.position||'—').replace(/\{department\}/g,u.department||'—')
+    .replace(/\{joined\}/g,u.hrm?.joiningDate?fmtD(u.hrm.joiningDate):'—').replace(/\{salary\}/g,(sal.basic?cur+' '+(Number(sal.basic||0)+Number(sal.allow||0)):'—'))
+    .replace(/\{company\}/g,'BloomingBox').replace(/\{date\}/g,fmtD(todayISO()));
+}
+function _printHTML(title,inner){
+  const w=window.open('','_blank','width=760,height=900');if(!w)return toast('Allow pop-ups to print','err');
+  w.document.write('<html><head><title>'+esc(title)+'</title><style>body{font:14px/1.7 Georgia,serif;color:#1a1d24;max-width:640px;margin:48px auto;padding:0 24px;white-space:pre-wrap}h2{font-family:system-ui,sans-serif;letter-spacing:-.4px}</style></head><body><h2>'+esc(title)+'</h2>'+inner+'<script>window.onload=()=>window.print()<\/script></body></html>');
+  w.document.close();
+}
+
+/* ── WHO'S IN / ON LEAVE dashboard widget ── */
+function _onLeaveToday(uid2,date){return (DB.leaveRequests||[]).some(r=>r.userId===uid2&&r.status==='Approved'&&r.start<=date&&date<=r.end);}
+function _whoIsInWidget(){
+  const d=todayISO();const dy=dayAbbr(d);
+  const act=DB.users.filter(u=>u.status==='Active'&&u.role!=='Admin');
+  const IN=[],WFH=[],LEAVE=[],OFF=[],OUT=[];
+  act.forEach(u=>{
+    const rec=(DB.attendance||[]).find(a=>a.userId===u.id&&a.date===d);
+    if(rec&&rec.clockIn){((rec.flags||[]).includes('WFH')?WFH:IN).push(u);return;}
+    if(_onLeaveToday(u.id,d)){LEAVE.push(u);return;}
+    if((u.hrm?.schedule?.offDays||[]).includes(dy)){OFF.push(u);return;}
+    OUT.push(u);
+  });
+  const cell=(label,arr,bg,fg)=>`<div style="flex:1;min-width:105px;background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;padding:10px 12px">
+    <div style="display:flex;align-items:baseline;gap:6px"><span class="fd" style="font-size:19px;font-weight:800;color:${fg}">${arr.length}</span><span style="font-size:11px;font-weight:700;color:var(--c-text-2)">${label}</span></div>
+    <div style="display:flex;margin-top:6px">${arr.slice(0,6).map(u=>`<span style="margin-right:-6px" title="${esc(fullName(u))}">${avatar(u,'w-6 h-6','text-[9px]')}</span>`).join('')||'<span style="font-size:11px;color:var(--c-text-3)">—</span>'}${arr.length>6?`<span style="margin-left:10px;font-size:10px;color:var(--c-text-3);align-self:center">+${arr.length-6}</span>`:''}</div>
+  </div>`;
+  return `<div class="ui-card" style="padding:14px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><div class="fd" style="font-size:13.5px;font-weight:800;color:var(--c-text)">Today — who's in</div><span style="font-size:11px;color:var(--c-text-3)">${new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'})}</span></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${cell('In office',IN,'','var(--c-success-ink)')}${cell('WFH',WFH,'','#0369A1')}${cell('On leave',LEAVE,'','#B45309')}${cell('Day off',OFF,'','var(--c-text-3)')}${cell('Not in yet',OUT,'','var(--c-danger-ink)')}</div>
+  </div>`;
+}
+/* WFH tag — flips today's attendance flag (creates the record if you clock in later, flag persists) */
+App._togWFH=()=>{
+  const d=todayISO();let rec=(DB.attendance||[]).find(a=>a.userId===S.uid&&a.date===d);
+  if(!rec){rec={id:uid('att'),userId:S.uid,date:d,clockIn:null,clockOut:null,status:'Present',flags:[],createdAt:new Date().toISOString()};DB.attendance.push(rec);}
+  rec.flags=rec.flags||[];
+  const i=rec.flags.indexOf('WFH');
+  if(i>-1)rec.flags.splice(i,1);else rec.flags.push('WFH');
+  log(fullName(me()),rec.flags.includes('WFH')?'Marked WFH':'Unmarked WFH',d);
+  saveDB();toast(rec.flags.includes('WFH')?'Today marked as Work-from-Home':'WFH removed');rr();
+};
+
+/* ── EVENT TRIGGER ENGINE (Phase 0) — runs once per device per day after data loads. In-app
+      notifications always; emails ride the outbox. Configure in HR Config → Alerts. ── */
+function _runEventTriggers(){
+  try{
+    const A=(DB.hrmConfig||{}).alerts||{};const d=todayISO();
+    const stampKey='bridge_triggers_'+d;
+    if(localStorage.getItem(stampKey))return;
+    if(!(can('hrSettings','view')||isAdmin()||isMgr()))return; // fire from an HR/manager/admin session
+    const hrs=_hrUsers();
+    const tellRMHoP=(u,text,kind)=>{const m=_mgrOf(u);if(m)_notifyOnce(m.id,text,kind);hrs.forEach(h=>{if(!m||h.id!==m.id)_notifyOnce(h.id,text,kind);});};
+    const act=DB.users.filter(u=>u.status==='Active'&&u.role!=='Admin');
+    // 1) late arrival + no clock-in (after schedule.in + grace)
+    if(A.late!==false){
+      act.forEach(u=>{
+        const sch=u.hrm?.schedule||{};if((sch.offDays||[]).includes(dayAbbr(d)))return;
+        if(_onLeaveToday(u.id,d))return;
+        const rec=(DB.attendance||[]).find(a=>a.userId===u.id&&a.date===d);
+        const lateAfter=hm2m(sch.in||'09:00')+(Number(A.lateGrace)||20);
+        if(rec&&rec.clockIn&&rec.inMin!=null&&rec.inMin>lateAfter)tellRMHoP(u,'⏰ Late arrival: '+fullName(u)+' clocked in at '+rec.clockIn+' on '+fmtS(d),'attendance');
+        else if(A.missedClockIn!==false&&!rec&&nowHM()>lateAfter+60)tellRMHoP(u,'❓ No clock-in yet: '+fullName(u)+' ('+fmtS(d)+')','attendance');
+      });
+    }
+    // 2) leave SLA — pending longer than N working days escalates to RM & HoP
+    if(A.leaveSLA!==false){
+      const slaDays=Number(A.slaDays)||3;
+      (DB.leaveRequests||[]).filter(r=>r.status==='Pending').forEach(r=>{
+        const u=uById(r.userId);if(!u)return;
+        let wd=0,cur=new Date(String(r.createdAt||'').slice(0,10)+'T00:00:00');const end=new Date(d+'T00:00:00');
+        while(cur<end){cur.setDate(cur.getDate()+1);if(!['Sat','Sun'].includes(DAYS3[cur.getDay()]))wd++;}
+        if(wd>slaDays)tellRMHoP(u,'🚨 Leave SLA overdue: '+fullName(u)+"'s request is pending "+wd+' working days','leave');
+      });
+    }
+    // 3) document expiry (visa/passport/contract — any personal doc with an expiry date)
+    if(A.docExpiry!==false){
+      const days=Number(A.docExpiryDays)||30;
+      const lim=new Date(d+'T00:00:00');lim.setDate(lim.getDate()+days);
+      const limISO=lim.toISOString().slice(0,10);
+      act.forEach(u=>{(u.hrm?.personalDocs||[]).forEach(doc=>{
+        if(!doc.expiry)return;
+        if(doc.expiry<=limISO){
+          const when=doc.expiry<d?'EXPIRED '+fmtS(doc.expiry):'expires '+fmtS(doc.expiry);
+          _notifyOnce(u.id,'📄 Your document "'+doc.name+'" '+when+' — please renew','document');
+          hrs.forEach(h=>_notifyOnce(h.id,'📄 '+fullName(u)+' — "'+doc.name+'" '+when,'document'));
+        }
+      });});
+    }
+    // 4) probation ending
+    if(A.probation!==false){
+      const days=Number(A.probationDays)||7;
+      const lim=new Date(d+'T00:00:00');lim.setDate(lim.getDate()+days);
+      const limISO=lim.toISOString().slice(0,10);
+      act.forEach(u=>{
+        const pe=u.hrm?.probationEnd;if(!pe)return;
+        if(pe>=d&&pe<=limISO)tellRMHoP(u,'🎓 Probation ends '+fmtS(pe)+' for '+fullName(u)+' — start the probation review flow','lifecycle');
+        else if(pe<d&&!(DB.flows||[]).some(f=>f.kind==='probation'&&f.userId===u.id))tellRMHoP(u,'🎓 Probation ended '+fmtS(pe)+' for '+fullName(u)+' — review is overdue','lifecycle');
+      });
+    }
+    // 5) benefits — air ticket at the N-month anniversary
+    if(A.benefits!==false){
+      const months=Number(A.benefitMonths)||24;
+      act.forEach(u=>{
+        const j=u.hrm?.joiningDate;if(!j)return;
+        const ann=new Date(j+'T00:00:00');ann.setMonth(ann.getMonth()+months);
+        const annISO=ann.toISOString().slice(0,10);
+        if(annISO===d||(annISO<d&&annISO>new Date(Date.now()-7*86400000).toISOString().slice(0,10))){
+          _notifyOnce(u.id,'✈️ You\'ve reached your '+months+'-month anniversary — air-ticket benefit is due','benefit');
+          hrs.forEach(h=>_notifyOnce(h.id,'✈️ Air-ticket benefit due: '+fullName(u)+' ('+months+'-month anniversary '+fmtS(annISO)+')','benefit'));
+        }
+      });
+    }
+    localStorage.setItem(stampKey,'1');
+    saveDB();
+  }catch(e){console.warn('[triggers]',e.message);}
+}
+
+/* ── LIFECYCLE FLOWS: onboarding / probation / exit — one engine, three templates ── */
+function _flowStart(kind,userId){
+  const u=uById(userId);if(!u)return null;
+  const tpl=((DB.hrmConfig||{}).flowTemplates||{})[kind]||[];
+  const hrs=_hrUsers();const m=_mgrOf(u);
+  const today=new Date(todayISO()+'T00:00:00');
+  const steps=tpl.map(t=>{
+    let ownerId=null;
+    if(t.ownerType==='manager')ownerId=m?m.id:(hrs[0]||{}).id||null;
+    else if(t.ownerType==='hr')ownerId=(hrs[0]||{}).id||null;
+    else if(t.ownerType==='dept'){const du=DB.users.find(x=>x.status==='Active'&&x.department===t.dept);ownerId=du?du.id:(hrs[0]||{}).id||null;}
+    const due=new Date(today);due.setDate(due.getDate()+(Number(t.offsetDays)||0));
+    return{id:uid('fs'),title:t.title,ownerType:t.ownerType,dept:t.dept||'',ownerId,type:t.type||'task',dueDate:due.toISOString().slice(0,10),done:false,doneBy:null,doneAt:null,formText:'',note:''};
+  });
+  const f={id:uid('flw'),kind,userId,status:'Active',steps,createdBy:S.uid,createdAt:new Date().toISOString(),completedAt:null};
+  DB.flows.push(f);_pushRow('flows',_flowRow(f),'flow');
+  steps.forEach(st=>{if(st.ownerId&&st.ownerId!==S.uid)notify(st.ownerId,'📋 '+kind[0].toUpperCase()+kind.slice(1)+' task for '+fullName(u)+': "'+st.title+'" · due '+fmtS(st.dueDate),'lifecycle','lifecycle');});
+  log(fullName(me()),'Started '+kind+' flow',fullName(u));
+  saveDB();return f;
+}
+App._flowNew=(kind)=>{
+  if(!can('lifecycle','manage'))return toast('You need Lifecycle → Manage','err');
+  const users=DB.users.filter(u=>u.status==='Active');
+  modalShell({title:'Start '+kind+' flow',size:'max-w-sm',
+    body:`<div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Colleague</label>
+      <select id="flw-user" class="ui-select rf">${users.map(u=>`<option value="${u.id}">${esc(fullName(u))}</option>`).join('')}</select>
+      <p style="font-size:11.5px;color:var(--c-text-3);margin-top:10px">Steps come from the ${kind} template (HR Config → Flow templates). Owners are notified with due dates.</p></div>`,
+    footer:btnG('Cancel','App.closeModal()')+btnP('Start flow',`App._flowStartGo('${kind}')`)});
+};
+App._flowStartGo=(kind)=>{const el=document.getElementById('flw-user');if(!el)return;_flowStart(kind,el.value);closeModal();toast('Flow started');rr();};
+App._flowStep=(fid,sid)=>{
+  const f=(DB.flows||[]).find(x=>x.id===fid);if(!f)return;
+  const st=f.steps.find(x=>x.id===sid);if(!st)return;
+  if(!(st.ownerId===S.uid||can('lifecycle','manage')))return toast('Only the step owner or HR can complete this','err');
+  st.done=!st.done;st.doneBy=st.done?S.uid:null;st.doneAt=st.done?new Date().toISOString():null;
+  const u=uById(f.userId);
+  if(st.done&&st.type==='payrollHold'&&u){_ensureHrm(u);u.hrm.payrollHold=true;notify(...( _hrUsers()[0]?[_hrUsers()[0].id]:[S.uid]),'⏸️ Payroll suspended for '+fullName(u)+' (exit flow)','payroll');}
+  if(f.steps.every(x=>x.done)){f.status='Completed';f.completedAt=new Date().toISOString();if(u)notify(f.createdBy||S.uid,'✅ '+f.kind+' flow completed for '+fullName(u),'lifecycle');}
+  else f.status='Active';
+  _pushRow('flows',_flowRow(f),'flow');log(fullName(me()),(st.done?'Completed':'Reopened')+' flow step',st.title);
+  saveDB();rr();
+};
+App._flowForm=(fid,sid,val)=>{const f=(DB.flows||[]).find(x=>x.id===fid);if(!f)return;const st=f.steps.find(x=>x.id===sid);if(!st)return;st.formText=val;clearTimeout(App._flwT);App._flwT=setTimeout(()=>{_pushRow('flows',_flowRow(f),'flow');saveDB();},1200);};
+App._flowDel=(fid)=>{if(!can('lifecycle','manage'))return;const f=(DB.flows||[]).find(x=>x.id===fid);if(!f)return;if(!confirm('Delete this flow?'))return;DB.flows=DB.flows.filter(x=>x.id!==fid);_delRow('flows',fid,'flow');log(fullName(me()),'Deleted flow',f.kind);saveDB();rr();};
+function lifecyclePage(){
+  const canMng=can('lifecycle','manage');
+  const f=scopeFilter('lifecycle');
+  const mine=(DB.flows||[]).filter(x=>canMng||f(x.userId)||x.userId===S.uid||x.steps.some(s=>s.ownerId===S.uid));
+  const tab=S.filters.lcTab||'all';
+  const KINDS=[['all','All'],['onboarding','Onboarding'],['probation','Probation'],['exit','Exit']];
+  const list=mine.filter(x=>tab==='all'||x.kind===tab).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const kindChip=k=>({onboarding:['#ECFDF5','#0B7A55','Onboarding'],probation:['#EFF6FF','#1D4ED8','Probation'],exit:['#FFF1F2','#BE123C','Exit']}[k]||['#F6F7F8','#6B7280',k]);
+  const cards=list.map(fl=>{
+    const u=uById(fl.userId);const done=fl.steps.filter(s=>s.done).length;
+    const [bg,fg,lb]=kindChip(fl.kind);
+    const open=S.filters.lcOpen===fl.id;
+    const steps=open?fl.steps.map(st=>{
+      const o=uById(st.ownerId);const late=!st.done&&st.dueDate<todayISO();
+      return `<div style="display:flex;gap:10px;padding:8px 0;border-top:1px dashed var(--c-border);align-items:flex-start">
+        <button onclick="App._flowStep('${fl.id}','${st.id}')" title="Toggle done" style="width:22px;height:22px;border-radius:7px;border:2px solid ${st.done?'#22C55E':'var(--c-border)'};background:${st.done?'#22C55E':'var(--c-surface)'};color:#fff;display:grid;place-items:center;cursor:pointer;flex-shrink:0;margin-top:1px">${st.done?ic('check','w-3 h-3'):''}</button>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;color:var(--c-text);${st.done?'text-decoration:line-through;opacity:.6':''}">${esc(st.title)}</div>
+          <div style="font-size:11px;color:${late?'var(--c-danger-ink)':'var(--c-text-3)'}">${o?esc(fullName(o)):'—'}${st.dept?' · '+esc(st.dept):''} · due ${fmtS(st.dueDate)}${late?' · OVERDUE':''}${st.done&&st.doneBy?' · done by '+esc(fullName(uById(st.doneBy))||''):''}</div>
+          ${st.type==='form'?`<textarea rows="2" placeholder="Capture the ${esc(st.title.toLowerCase())} here…" oninput="App._flowForm('${fl.id}','${st.id}',this.value)" class="ui-input rf" style="margin-top:6px;resize:vertical;font-size:12px">${esc(st.formText||'')}</textarea>`:''}
+          ${st.type==='letter'?`<button onclick="App._letterNew('${fl.userId}')" class="ui-btn ui-btn-ghost ui-btn-sm" style="margin-top:6px">${ic('doc','w-3.5 h-3.5')}Open Letters</button>`:''}
+          ${st.type==='payrollHold'?`<div style="font-size:10.5px;color:var(--c-text-3);margin-top:3px">Completing this sets a payroll hold on the colleague.</div>`:''}
+        </div>
+      </div>`;
+    }).join(''):'';
+    return `<div class="ui-card" style="padding:14px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:10px;cursor:pointer" onclick="S.filters.lcOpen=S.filters.lcOpen==='${fl.id}'?null:'${fl.id}';rr()">
+        ${u?avatar(u,'w-9 h-9','text-xs'):''}
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fd" style="font-size:14px;font-weight:800;color:var(--c-text)">${u?esc(fullName(u)):'—'}</span><span style="font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;background:${bg};color:${fg}">${lb}</span>${fl.status==='Completed'?chip('Approved').replace('Approved','Completed'):''}</div>
+          <div style="font-size:11.5px;color:var(--c-text-3)">${done}/${fl.steps.length} steps · started ${fmtS(String(fl.createdAt).slice(0,10))}</div>
+        </div>
+        <div style="width:90px;height:6px;background:var(--c-border);border-radius:3px;overflow:hidden"><div style="height:100%;width:${fl.steps.length?Math.round(done/fl.steps.length*100):0}%;background:${done===fl.steps.length?'#22C55E':'#0EA5E9'}"></div></div>
+        ${canMng?`<button onclick="event.stopPropagation();App._flowDel('${fl.id}')" style="width:26px;height:26px;display:grid;place-items:center;border:none;background:transparent;color:var(--c-text-3);cursor:pointer">${ic('trash','w-3.5 h-3.5')}</button>`:''}
+        <span style="font-size:10px;color:var(--c-text-3);transform:${open?'rotate(180deg)':'none'}">▼</span>
+      </div>
+      ${open?`<div style="margin-top:8px">${steps}</div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="fade">${hdr('Lifecycle','Onboarding · probation · exit — guided flows with owners & due dates',canMng?[['onboarding','Onboarding'],['probation','Probation'],['exit','Exit']].map(k=>btn('+ '+k[1],`App._flowNew('${k[0]}')`,{variant:k[0]==='onboarding'?'primary':'ghost',size:'sm'})).join(''):'')}
+    <div class="ui-tabs" style="margin-bottom:14px">${KINDS.map(k=>`<button class="ui-tab${tab===k[0]?' on':''}" onclick="S.filters.lcTab='${k[0]}';rr()">${k[1]}</button>`).join('')}</div>
+    ${cards||empty('users','No flows yet',canMng?'Start an onboarding, probation or exit flow — steps and owners come from the templates in HR Config.':'Flows you own steps in will appear here.')}
+  </div>`;
+}
+
+/* ── LETTERS — request → approve → issue (print/PDF via browser) ── */
+App._letterNew=(userId)=>{
+  if(!can('letters','create'))return toast('You need Letters → Create','err');
+  _seedHRMPlan();
+  const tpls=DB.hrmConfig.letterTemplates;
+  const users=can('letters','approve')?DB.users.filter(u=>u.status==='Active'):[me()];
+  const uid0=userId&&users.some(u=>u.id===userId)?userId:S.uid;
+  modalShell({title:'Request a letter',size:'max-w-md',
+    body:`<div style="display:flex;flex-direction:column;gap:12px">
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">For</label><select id="lt-user" class="ui-select rf">${users.map(u=>`<option value="${u.id}" ${u.id===uid0?'selected':''}>${esc(fullName(u))}</option>`).join('')}</select></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Letter type</label><select id="lt-type" class="ui-select rf">${Object.keys(tpls).map(k=>`<option value="${k}">${esc(tpls[k].name)}</option>`).join('')}</select></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Note to HR (optional)</label><input id="lt-note" class="ui-input rf" placeholder="Purpose, addressee, anything specific…"/></div>
+    </div>`,
+    footer:btnG('Cancel','App.closeModal()')+btnP('Request','App._letterReq()')});
+};
+App._letterReq=()=>{
+  const uid2=document.getElementById('lt-user')?.value,type=document.getElementById('lt-type')?.value,note=document.getElementById('lt-note')?.value||'';
+  const u=uById(uid2);const tpl=DB.hrmConfig.letterTemplates[type];if(!u||!tpl)return;
+  const l={id:uid('ltr'),userId:uid2,type,title:tpl.name,body:_fillLetter(tpl.body,u),status:'Requested',requestedBy:S.uid,approverId:null,decidedAt:null,issuedAt:null,note,createdAt:new Date().toISOString()};
+  DB.letters.push(l);_pushRow('letters',_letterRow(l),'letter');
+  _hrUsers().forEach(h=>notify(h.id,'📨 Letter requested: '+tpl.name+' for '+fullName(u),'letter','letters'));
+  log(fullName(me()),'Requested letter',tpl.name+' · '+fullName(u));
+  saveDB();closeModal();toast('Letter requested');rr();
+};
+App._letterDecide=(id,action)=>{
+  if(!can('letters','approve'))return toast('You need Letters → Approve','err');
+  const l=(DB.letters||[]).find(x=>x.id===id);if(!l)return;
+  l.status=action==='approve'?'Approved':'Rejected';l.approverId=S.uid;l.decidedAt=new Date().toISOString();
+  _pushRow('letters',_letterRow(l),'letter');
+  notify(l.requestedBy,'📨 Letter '+l.status.toLowerCase()+': '+l.title,'letter','letters');
+  log(fullName(me()),'Letter '+l.status.toLowerCase(),l.title);
+  saveDB();rr();
+};
+App._letterIssue=(id)=>{
+  if(!can('letters','issue'))return toast('You need Letters → Issue','err');
+  const l=(DB.letters||[]).find(x=>x.id===id);if(!l)return;
+  l.status='Issued';l.issuedAt=new Date().toISOString();
+  _pushRow('letters',_letterRow(l),'letter');
+  notify(l.userId,'📄 Your letter is issued: '+l.title,'letter','letters');
+  log(fullName(me()),'Letter issued',l.title);
+  saveDB();rr();App._letterPrint(id);
+};
+App._letterPrint=(id)=>{const l=(DB.letters||[]).find(x=>x.id===id);if(!l)return;_printHTML(l.title,'<div>'+esc(l.body).replace(/\n/g,'<br>')+'</div>');};
+App._letterEdit=(id,val)=>{const l=(DB.letters||[]).find(x=>x.id===id);if(!l)return;l.body=val;clearTimeout(App._ltT);App._ltT=setTimeout(()=>{_pushRow('letters',_letterRow(l),'letter');saveDB();},1200);};
+function lettersPage(){
+  _seedHRMPlan();
+  const canAppr=can('letters','approve'),canIssue=can('letters','issue');
+  const f=scopeFilter('letters');
+  const mine=(DB.letters||[]).filter(l=>canAppr||l.userId===S.uid||l.requestedBy===S.uid||f(l.userId)).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const stChip=s=>({Requested:['#FFFBEB','#B45309'],Approved:['#ECFDF5','#047857'],Issued:['#EFF6FF','#1D4ED8'],Rejected:['#FFF1F2','#9F1239']}[s]||['#F6F7F8','#6B7280']);
+  const rows=mine.map(l=>{
+    const u=uById(l.userId);const [bg,fg]=stChip(l.status);
+    const open=S.filters.ltOpen===l.id;
+    return `<div class="ui-card" style="padding:14px;margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:10px;cursor:pointer" onclick="S.filters.ltOpen=S.filters.ltOpen==='${l.id}'?null:'${l.id}';rr()">
+        <span style="width:36px;height:36px;border-radius:10px;background:var(--c-surface-2);display:grid;place-items:center;color:var(--c-text-2);flex-shrink:0">${ic('doc','w-4 h-4')}</span>
+        <div style="flex:1;min-width:0">
+          <div class="fd" style="font-size:13.5px;font-weight:800;color:var(--c-text)">${esc(l.title)} — ${u?esc(fullName(u)):'—'}</div>
+          <div style="font-size:11px;color:var(--c-text-3)">requested by ${esc(fullName(uById(l.requestedBy))||'—')} · ${fmtS(String(l.createdAt).slice(0,10))}${l.note?' · "'+esc(l.note)+'"':''}</div>
+        </div>
+        <span style="font-size:10.5px;font-weight:800;padding:3px 10px;border-radius:20px;background:${bg};color:${fg}">${l.status}</span>
+      </div>
+      ${open?`<div style="margin-top:10px;border-top:1px solid var(--c-border);padding-top:10px">
+        ${(canAppr&&l.status!=='Issued')?`<textarea rows="7" oninput="App._letterEdit('${l.id}',this.value)" class="ui-input rf" style="font-family:Georgia,serif;font-size:13px;line-height:1.6;resize:vertical">${esc(l.body)}</textarea>`:`<div style="font:13px/1.65 Georgia,serif;color:var(--c-text);white-space:pre-wrap;background:var(--c-surface-2);border-radius:10px;padding:14px">${esc(l.body)}</div>`}
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          ${l.status==='Requested'&&canAppr?btn('Approve',`App._letterDecide('${l.id}','approve')`,{variant:'primary',size:'sm',icon:'check'})+btn('Reject',`App._letterDecide('${l.id}','reject')`,{variant:'danger',size:'sm'}):''}
+          ${l.status==='Approved'&&canIssue?btn('Issue & print',`App._letterIssue('${l.id}')`,{variant:'primary',size:'sm',icon:'doc'}):''}
+          ${l.status==='Issued'?btn('Print / PDF',`App._letterPrint('${l.id}')`,{variant:'ghost',size:'sm'}):''}
+        </div>
+      </div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="fade">${hdr('Letters','Request → approve → issue, from templates',can('letters','create')?btnP('Request letter','App._letterNew()','plus'):'')}
+    ${rows||empty('doc','No letters yet','Request a salary certificate, NOC, confirmation and more — HR approves and issues.')}
+  </div>`;
+}
+
+/* ── DISCIPLINE — warnings on file, 12-month retention ── */
+App._discNew=()=>{
+  if(!can('discipline','manage'))return toast('You need Discipline → Manage','err');
+  const users=DB.users.filter(u=>u.status==='Active');
+  modalShell({title:'Record a warning',size:'max-w-md',
+    body:`<div style="display:flex;flex-direction:column;gap:12px">
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Colleague</label><select id="dc-user" class="ui-select rf">${users.map(u=>`<option value="${u.id}">${esc(fullName(u))}</option>`).join('')}</select></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Level</label><select id="dc-level" class="ui-select rf">${['Verbal','First','Second','Dismissal'].map(l=>`<option>${l}</option>`).join('')}</select></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Reason *</label><input id="dc-reason" class="ui-input rf" placeholder="e.g. Repeated late arrivals"/></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Details</label><textarea id="dc-note" rows="3" class="ui-input rf" style="resize:vertical" placeholder="What happened, when, witnesses…"></textarea></div>
+      <div style="font-size:11px;color:var(--c-text-3)">Warnings stay on file for 12 months, then expire automatically.</div>
+    </div>`,
+    footer:btnG('Cancel','App.closeModal()')+btnP('Record warning','App._discSave()')});
+};
+App._discSave=()=>{
+  const uid2=document.getElementById('dc-user')?.value,level=document.getElementById('dc-level')?.value,reason=(document.getElementById('dc-reason')?.value||'').trim(),note=document.getElementById('dc-note')?.value||'';
+  if(!reason)return toast('Reason is required','err');
+  const exp=new Date(todayISO()+'T00:00:00');exp.setFullYear(exp.getFullYear()+1);
+  const d={id:uid('dsc'),userId:uid2,level,reason,note,issuedBy:S.uid,createdAt:new Date().toISOString(),expiresAt:exp.toISOString().slice(0,10)};
+  DB.discipline.push(d);_pushRow('discipline',_discRow(d),'warning');
+  notify(uid2,'⚠️ A '+level.toLowerCase()+' warning was recorded on your file: '+reason,'discipline');
+  const u=uById(uid2);const m=_mgrOf(u);if(m&&m.id!==S.uid)notify(m.id,'⚠️ '+level+' warning recorded for '+fullName(u),'discipline');
+  log(fullName(me()),'Warning recorded',level+' · '+(u?fullName(u):''));
+  saveDB();closeModal();toast('Warning recorded');rr();
+};
+App._discDel=(id)=>{if(!can('discipline','manage'))return;if(!confirm('Remove this warning from file?'))return;DB.discipline=DB.discipline.filter(x=>x.id!==id);_delRow('discipline',id,'warning');saveDB();toast('Removed','warn');rr();};
+function disciplinePage(){
+  const canMng=can('discipline','manage');
+  const f=scopeFilter('discipline');
+  const today=todayISO();
+  const mine=(DB.discipline||[]).filter(d=>canMng||f(d.userId)||d.userId===S.uid).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const lvC={Verbal:['#FFFBEB','#B45309'],First:['#FFF7ED','#C2410C'],Second:['#FFF1F2','#BE123C'],Dismissal:['#1C212B','#fff']};
+  const rows=mine.map(d=>{
+    const u=uById(d.userId);const by=uById(d.issuedBy);const expired=d.expiresAt&&d.expiresAt<today;
+    const [bg,fg]=lvC[d.level]||['#F6F7F8','#6B7280'];
+    return `<div class="ui-card" style="padding:13px 14px;margin-bottom:8px;display:flex;gap:11px;align-items:flex-start;${expired?'opacity:.55':''}">
+      ${u?avatar(u,'w-9 h-9','text-xs'):''}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="fd" style="font-size:13.5px;font-weight:800;color:var(--c-text)">${u?esc(fullName(u)):'—'}</span>
+          <span style="font-size:10px;font-weight:800;padding:2px 9px;border-radius:20px;background:${bg};color:${fg}">${d.level}${d.level!=='Verbal'&&d.level!=='Dismissal'?' warning':''}</span>
+          ${expired?'<span style="font-size:10px;font-weight:800;color:var(--c-text-3)">EXPIRED</span>':''}</div>
+        <div style="font-size:12.5px;color:var(--c-text);margin-top:3px;font-weight:600">${esc(d.reason)}</div>
+        ${d.note?`<div style="font-size:12px;color:var(--c-text-2);margin-top:2px">${esc(d.note)}</div>`:''}
+        <div style="font-size:10.5px;color:var(--c-text-3);margin-top:4px">by ${by?esc(fullName(by)):'—'} · ${fmtS(String(d.createdAt).slice(0,10))} · on file until ${fmtS(d.expiresAt)}</div>
+      </div>
+      ${canMng?`<button onclick="App._discDel('${d.id}')" style="width:26px;height:26px;display:grid;place-items:center;border:none;background:transparent;color:var(--c-text-3);cursor:pointer">${ic('trash','w-3.5 h-3.5')}</button>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="fade">${hdr('Discipline','Warnings on file — auto-expire after 12 months',canMng?btnP('Record warning','App._discNew()','plus'):'')}
+    ${rows||empty('alert','Nothing on file','Verbal, first, second and dismissal warnings recorded here stay for 12 months.')}
+  </div>`;
+}
+
+/* ── OVERTIME — capture, caps, approval, pay or time-in-lieu (comp-off ledger) ── */
+App._otNew=()=>{
+  if(!can('overtime','submit'))return toast('You need Overtime → Submit','err');
+  modalShell({title:'Log overtime',size:'max-w-sm',
+    body:`<div style="display:flex;flex-direction:column;gap:12px">
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Date</label><input id="ot-date" type="date" value="${todayISO()}" class="ui-input rf"/></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Hours *</label><input id="ot-hours" type="number" min="0.5" step="0.5" class="ui-input rf" placeholder="e.g. 2"/></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Reason *</label><input id="ot-reason" class="ui-input rf" placeholder="What required the extra hours?"/></div>
+      <div style="font-size:11px;color:var(--c-text-3)">Weekly cap: ${(DB.hrmConfig?.alerts?.otWeeklyCap)||10}h. Your manager reviews weekly and approves as payment or time-in-lieu.</div>
+    </div>`,
+    footer:btnG('Cancel','App.closeModal()')+btnP('Submit','App._otSave()')});
+};
+App._otSave=()=>{
+  const date=document.getElementById('ot-date')?.value,hours=parseFloat(document.getElementById('ot-hours')?.value),reason=(document.getElementById('ot-reason')?.value||'').trim();
+  if(!date||!isFinite(hours)||hours<=0)return toast('Enter the hours','err');
+  if(!reason)return toast('Reason is required','err');
+  const cap=Number(DB.hrmConfig?.alerts?.otWeeklyCap)||10;
+  const wkStart=new Date(date+'T00:00:00');wkStart.setDate(wkStart.getDate()-((wkStart.getDay()+6)%7));
+  const ws=wkStart.toISOString().slice(0,10);const we=new Date(wkStart);we.setDate(we.getDate()+6);const weISO=we.toISOString().slice(0,10);
+  const wkH=(DB.overtime||[]).filter(o=>o.userId===S.uid&&o.date>=ws&&o.date<=weISO&&o.status!=='Rejected').reduce((a,o)=>a+o.hours,0);
+  if(wkH+hours>cap)return toast('Over the weekly cap ('+cap+'h): you already have '+wkH+'h this week','err');
+  const o={id:uid('ot'),userId:S.uid,date,hours,reason,status:'Pending',comp:null,decidedBy:null,decidedAt:null,decisionNote:'',createdAt:new Date().toISOString()};
+  DB.overtime.push(o);_pushRow('overtime',_otRow(o),'overtime');
+  const m=_mgrOf(me());if(m)notify(m.id,'⏱️ Overtime submitted: '+fullName(me())+' · '+hours+'h on '+fmtS(date),'overtime','overtime');
+  log(fullName(me()),'Overtime submitted',hours+'h '+date);
+  saveDB();closeModal();toast('Overtime submitted');rr();
+};
+App._otDecide=(id,action,comp)=>{
+  if(!can('overtime','approve'))return toast('You need Overtime → Approve','err');
+  const o=(DB.overtime||[]).find(x=>x.id===id);if(!o)return;
+  o.status=action==='approve'?'Approved':'Rejected';o.comp=action==='approve'?(comp||'pay'):null;o.decidedBy=S.uid;o.decidedAt=new Date().toISOString();
+  if(action==='approve'&&o.comp==='lieu'){
+    const u=uById(o.userId);
+    if(u){_ensureHrm(u);const days=Math.round((o.hours/8)*100)/100;
+      const exp=new Date(todayISO()+'T00:00:00');exp.setMonth(exp.getMonth()+3);
+      u.hrm.compOff=u.hrm.compOff||[];u.hrm.compOff.push({id:uid('co'),days,reason:'Time-in-lieu · OT '+o.hours+'h on '+o.date,expiry:exp.toISOString().slice(0,10),at:new Date().toISOString(),by:S.uid});
+    }
+  }
+  _pushRow('overtime',_otRow(o),'overtime');
+  notify(o.userId,'⏱️ Overtime '+o.status.toLowerCase()+(o.comp?' ('+(o.comp==='lieu'?'time-in-lieu → comp-off':'payment')+')':'')+': '+o.hours+'h on '+fmtS(o.date),'overtime','overtime');
+  log(fullName(me()),'Overtime '+o.status.toLowerCase(),o.hours+'h · '+(uById(o.userId)?fullName(uById(o.userId)):''));
+  saveDB();rr();
+};
+function overtimePage(){
+  const canAppr=can('overtime','approve');
+  const f=scopeFilter('overtime');
+  const mine=(DB.overtime||[]).filter(o=>o.userId===S.uid||canAppr&&f(o.userId)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const pend=mine.filter(o=>o.status==='Pending'&&o.userId!==S.uid);
+  const stC={Pending:['#FFFBEB','#B45309'],Approved:['#ECFDF5','#047857'],Rejected:['#FFF1F2','#9F1239']};
+  const row=o=>{
+    const u=uById(o.userId);const [bg,fg]=stC[o.status];
+    return `<div class="ui-card" style="padding:12px 14px;margin-bottom:7px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      ${u?avatar(u,'w-8 h-8','text-[10px]'):''}
+      <div style="flex:1;min-width:150px">
+        <div style="font-size:13px;font-weight:700;color:var(--c-text)">${u?esc(fullName(u)):'—'} · <span style="color:var(--c-brand-ink)">${o.hours}h</span> on ${fmtS(o.date)}</div>
+        <div style="font-size:11.5px;color:var(--c-text-2)">${esc(o.reason)}${o.comp?' · '+(o.comp==='lieu'?'time-in-lieu':'payment'):''}</div>
+      </div>
+      <span style="font-size:10.5px;font-weight:800;padding:3px 10px;border-radius:20px;background:${bg};color:${fg}">${o.status}</span>
+      ${o.status==='Pending'&&canAppr&&o.userId!==S.uid?`<div style="display:flex;gap:6px">
+        ${btn('Pay',`App._otDecide('${o.id}','approve','pay')`,{variant:'primary',size:'sm'})}
+        ${btn('Time-in-lieu',`App._otDecide('${o.id}','approve','lieu')`,{variant:'ghost',size:'sm'})}
+        ${btn('Reject',`App._otDecide('${o.id}','reject')`,{variant:'danger',size:'sm'})}
+      </div>`:''}
+    </div>`;
+  };
+  return `<div class="fade">${hdr('Overtime','Log extra hours — weekly review, paid or time-in-lieu',can('overtime','submit')?btnP('Log overtime','App._otNew()','plus'):'')}
+    ${pend.length?`<div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">To review (${pend.length})</div>${pend.map(row).join('')}<div style="height:10px"></div>`:''}
+    <div style="font-size:11px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">All entries</div>
+    ${mine.map(row).join('')||empty('clock','No overtime yet','Log extra hours worked — your manager approves as payment or time-in-lieu (comp-off).')}
+  </div>`;
+}
+
+/* ── SHIFT ROSTER (revived over the existing shifts table) ── */
+function shiftsPage(){
+  const canMng=can('scheduling','manage');
+  const f=scopeFilter('scheduling');
+  const today=todayISO();
+  S.filters.shWk=S.filters.shWk||0;
+  const ref=new Date(today+'T00:00:00');const dow=ref.getDay();ref.setDate(ref.getDate()+(dow===0?-6:1-dow)+S.filters.shWk*7);
+  const week=Array.from({length:7},(_,i)=>{const d2=new Date(ref);d2.setDate(d2.getDate()+i);return d2.toISOString().slice(0,10);});
+  const people=canMng?DB.users.filter(u=>u.status==='Active'&&u.role!=='Admin'&&(f(u.id)||isAdmin()||isSubAdmin())):[me()].filter(Boolean);
+  const offToday=DB.users.filter(u=>u.status==='Active'&&(_onLeaveToday(u.id,today)||(u.hrm?.schedule?.offDays||[]).includes(dayAbbr(today))));
+  const cell=(u,d2)=>{
+    const sh=(DB.shifts||[]).find(s=>s.userId===u.id&&s.date===d2);
+    const off=(u.hrm?.schedule?.offDays||[]).includes(dayAbbr(d2));
+    const onLv=_onLeaveToday(u.id,d2);
+    if(onLv)return `<div style="font-size:10px;font-weight:800;color:#B45309;background:#FFFBEB;border-radius:7px;padding:5px 4px;text-align:center">LEAVE</div>`;
+    if(sh)return `<div ${canMng?`onclick="App._shEdit('${u.id}','${d2}')" style="cursor:pointer;`:'style="'}font-size:10px;font-weight:800;color:${sh.status==='published'?'#0B7A55':'#92400E'};background:${sh.status==='published'?'#ECFDF5':'#FEF3C7'};border-radius:7px;padding:5px 3px;text-align:center" title="${esc(sh.note||'')}${sh.status==='draft'?' (draft)':''}">${esc(sh.start)}–${esc(sh.end)}</div>`;
+    if(off)return `<div style="font-size:10px;color:var(--c-text-3);text-align:center;padding:5px 0">off</div>`;
+    return canMng?`<button onclick="App._shEdit('${u.id}','${d2}')" style="width:100%;border:1px dashed var(--c-border);background:transparent;border-radius:7px;color:var(--c-text-3);font-size:11px;cursor:pointer;padding:4px 0">+</button>`:'<div style="text-align:center;color:var(--c-text-3);font-size:10px;padding:5px 0">—</div>';
+  };
+  const draftN=(DB.shifts||[]).filter(s=>s.status==='draft'&&week.includes(s.date)).length;
+  return `<div class="fade">${hdr('Shifts','Weekly roster — publish so colleagues see their shifts',canMng&&draftN?btn('Publish week ('+draftN+')','App._shPublish(\''+week[0]+'\',\''+week[6]+'\')',{variant:'primary',icon:'check'}):'')}
+    ${offToday.length?`<div class="ui-card" style="padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="font-size:11.5px;font-weight:800;color:var(--c-text-2)">Off / on leave today:</span>${offToday.slice(0,10).map(u=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--c-text-2)">${avatar(u,'w-5 h-5','text-[8px]')}${esc(fullName(u))}</span>`).join('')}</div>`:''}
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+      <button onclick="S.filters.shWk--;rr()" class="ui-btn ui-btn-ghost ui-btn-sm">‹ Prev</button>
+      <button onclick="S.filters.shWk=0;rr()" class="ui-btn ui-btn-ghost ui-btn-sm">This week</button>
+      <button onclick="S.filters.shWk++;rr()" class="ui-btn ui-btn-ghost ui-btn-sm">Next ›</button>
+      <span style="font-size:12px;font-weight:700;color:var(--c-text-2);margin-left:6px">${fmtS(week[0])} → ${fmtS(week[6])}</span>
+    </div>
+    <div class="ui-card" style="padding:0;overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:720px">
+      <thead><tr><th style="text-align:left;padding:9px 12px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase">Person</th>${week.map(d2=>`<th style="padding:9px 6px;font-size:10px;font-weight:800;color:${d2===today?'var(--c-brand-ink)':'var(--c-text-3)'};text-transform:uppercase">${dayAbbr(d2)} ${new Date(d2+'T00:00:00').getDate()}</th>`).join('')}</tr></thead>
+      <tbody>${people.map(u=>`<tr style="border-top:1px solid var(--c-border)"><td style="padding:8px 12px"><div style="display:flex;align-items:center;gap:8px">${avatar(u,'w-7 h-7','text-[10px]')}<span style="font-size:12.5px;font-weight:700;color:var(--c-text);white-space:nowrap">${esc(fullName(u))}</span></div></td>${week.map(d2=>`<td style="padding:5px 4px;min-width:78px">${cell(u,d2)}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="8">${empty('clock','Nobody to roster','')}</td></tr>`}</tbody>
+    </table></div>
+    ${canMng?'<div style="font-size:11px;color:var(--c-text-3);margin-top:8px">Amber = draft (only you see it) · green = published. Click a cell to edit.</div>':''}
+  </div>`;
+}
+App._shEdit=(uid2,date)=>{
+  if(!can('scheduling','manage'))return;
+  const sh=(DB.shifts||[]).find(s=>s.userId===uid2&&s.date===date);
+  const u=uById(uid2);
+  modalShell({title:'Shift — '+fullName(u),sub:fmtD(date),size:'max-w-sm',
+    body:`<div style="display:flex;flex-direction:column;gap:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Start</label><input id="sh-start" type="time" value="${esc(sh?.start||'09:00')}" class="ui-input rf"/></div>
+        <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">End</label><input id="sh-end" type="time" value="${esc(sh?.end||'18:00')}" class="ui-input rf"/></div>
+      </div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Location</label><select id="sh-loc" class="ui-select rf"><option value="">— Any —</option>${(DB.locations||[]).filter(l=>l.status==='Active').map(l=>`<option value="${l.id}" ${sh?.locationId===l.id?'selected':''}>${esc(l.name)}</option>`).join('')}</select></div>
+      <div><label style="display:block;font-size:11px;font-weight:700;color:var(--c-text-2);text-transform:uppercase;margin-bottom:6px">Note</label><input id="sh-note" value="${esc(sh?.note||'')}" class="ui-input rf" placeholder="Optional"/></div>
+    </div>`,
+    footer:(sh?btn('Remove',`App._shDel('${sh.id}')`,{variant:'danger',size:'sm'}):'')+btnG('Cancel','App.closeModal()')+btnP('Save shift',`App._shSave('${uid2}','${date}','${sh?sh.id:''}')`)});
+};
+App._shSave=(uid2,date,id)=>{
+  const start=document.getElementById('sh-start')?.value,end=document.getElementById('sh-end')?.value;
+  if(!start||!end)return toast('Set start and end','err');
+  let sh=id?(DB.shifts||[]).find(s=>s.id===id):null;
+  if(!sh){sh={id:uid('sh'),userId:uid2,date,createdBy:S.uid,createdAt:new Date().toISOString(),status:'draft',publishedAt:null};DB.shifts.push(sh);}
+  sh.start=start;sh.end=end;sh.locationId=document.getElementById('sh-loc')?.value||null;sh.note=document.getElementById('sh-note')?.value||'';
+  if(sh.status==='published')sh.status='draft';
+  log(fullName(me()),'Shift saved',fullName(uById(uid2))+' · '+date);
+  saveDB();closeModal();toast('Shift saved (draft — publish the week to share)');rr();
+};
+App._shDel=(id)=>{DB.shifts=(DB.shifts||[]).filter(s=>s.id!==id);sb.from('shifts').delete().eq('id',id).then(()=>{}).catch(()=>{});saveDB();closeModal();toast('Shift removed','warn');rr();};
+App._shPublish=(ws,we)=>{
+  if(!can('scheduling','manage'))return;
+  const drafts=(DB.shifts||[]).filter(s=>s.status==='draft'&&s.date>=ws&&s.date<=we);
+  drafts.forEach(s=>{s.status='published';s.publishedAt=new Date().toISOString();if(s.userId!==S.uid)notify(s.userId,'📅 Shift published: '+fmtS(s.date)+' '+s.start+'–'+s.end,'shift','shifts');});
+  log(fullName(me()),'Roster published',ws+' → '+we+' ('+drafts.length+' shifts)');
+  saveDB();toast(drafts.length+' shift'+(drafts.length===1?'':'s')+' published');rr();
+};
+
+/* ── PAYROLL — verify → run → approve → finalize · payslips · WPS CSV · rollback · variance ── */
+function _workingDaysIn(u,month){
+  const [y,m]=month.split('-').map(Number);const last=new Date(y,m,0).getDate();
+  const offs=new Set(u.hrm?.schedule?.offDays||['Sun']);const hol=new Set((DB.holidays||[]).map(h=>h.date));
+  let n=0;for(let d2=1;d2<=last;d2++){const iso=y+'-'+String(m).padStart(2,'0')+'-'+String(d2).padStart(2,'0');if(!offs.has(DAYS3[new Date(iso+'T00:00:00').getDay()])&&!hol.has(iso))n++;}
+  return{working:n,total:last};
+}
+function _payCompute(u,month){
+  const sal=u.hrm?.salary||{};const basic=Number(sal.basic||0),allow=Number(sal.allow||0);
+  const{working,total}=_workingDaysIn(u,month);
+  const [y,m]=month.split('-').map(Number);const mStart=month+'-01',mEnd=y+'-'+String(m).padStart(2,'0')+'-'+String(total).padStart(2,'0');
+  const offs=new Set(u.hrm?.schedule?.offDays||['Sun']);const hol=new Set((DB.holidays||[]).map(h=>h.date));
+  let present=0,wfh=0,leaveDays=0,unpaid=0,absent=0;
+  const lastCheck=mEnd<todayISO()?mEnd:todayISO();
+  for(let d2=1;d2<=total;d2++){
+    const iso=y+'-'+String(m).padStart(2,'0')+'-'+String(d2).padStart(2,'0');
+    if(offs.has(DAYS3[new Date(iso+'T00:00:00').getDay()])||hol.has(iso))continue;
+    const rec=(DB.attendance||[]).find(a=>a.userId===u.id&&a.date===iso&&a.clockIn);
+    if(rec){present++;if((rec.flags||[]).includes('WFH'))wfh++;continue;}
+    const lv=(DB.leaveRequests||[]).find(r=>r.userId===u.id&&r.status==='Approved'&&r.start<=iso&&iso<=r.end);
+    if(lv){leaveDays++;const lt=(DB.leaveTypes||[]).find(t=>t.id===lv.leaveTypeId);if(lt&&(lt.unpaid===true||/unpaid/i.test(lt.name||'')))unpaid++;continue;}
+    if(iso<=lastCheck)absent++;
+  }
+  const perDay=working?(basic+allow)/working:0;
+  const otHours=(DB.overtime||[]).filter(o=>o.userId===u.id&&o.status==='Approved'&&o.comp==='pay'&&o.date>=mStart&&o.date<=mEnd).reduce((a,o)=>a+o.hours,0);
+  const hourly=working?(basic+allow)/(working*8):0;
+  const mult=Number(DB.hrmConfig?.alerts?.otMultiplier)||1.25;
+  const otAmount=Math.round(otHours*hourly*mult*100)/100;
+  const unpaidDays=unpaid+absent;
+  const deduction=Math.round(unpaidDays*perDay*100)/100;
+  const net=Math.round((basic+allow+otAmount-deduction)*100)/100;
+  return{basic,allowances:allow,otAmount,deductions:deduction,unpaidDays,net,detail:{month,working,total,present,wfh,leaveDays,unpaid,absent,otHours,perDay:Math.round(perDay*100)/100,hold:u.hrm?.payrollHold===true}};
+}
+function payrollPage(){
+  if(!can('payroll','view'))return empty('shield','Restricted','You don\'t have Payroll access.');
+  _seedHRMPlan();
+  const month=S.filters.pyMonth||todayISO().slice(0,7);S.filters.pyMonth=month;
+  const run=(DB.payrollRuns||[]).find(r=>r.month===month&&r.status!=='RolledBack');
+  const items=run?(DB.payrollItems||[]).filter(i=>i.runId===run.id):[];
+  const cutoff=Number(DB.hrmConfig?.alerts?.payrollCutoff)||23;
+  const prev=(()=>{const d2=new Date(month+'-01T00:00:00');d2.setMonth(d2.getMonth()-1);return d2.toISOString().slice(0,7);})();
+  const prevRun=(DB.payrollRuns||[]).find(r=>r.month===prev&&(r.status==='Finalized'||r.status==='Approved'));
+  const prevItems=prevRun?(DB.payrollItems||[]).filter(i=>i.runId===prevRun.id):[];
+  const cur=(DB.users.find(u=>u.hrm?.salary?.currency)?.hrm.salary.currency)||'AED';
+  const money=v=>cur+' '+(Math.round(Number(v||0)*100)/100).toLocaleString();
+  const stFlow=['Draft','Verified','Approved','Finalized'];
+  const stIdx=run?stFlow.indexOf(run.status):-1;
+  const steps=stFlow.map((s2,i)=>`<span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:800;color:${i<=stIdx?'#0B7A55':'var(--c-text-3)'}"><span style="width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:${i<=stIdx?'#0E9F6E':'var(--c-border)'};color:#fff;font-size:10px">${i+1}</span>${s2}</span>`).join('<span style="color:var(--c-border)">—</span>');
+  const totals=items.reduce((a,i)=>({net:a.net+i.net,ot:a.ot+i.otAmount,ded:a.ded+i.deductions}),{net:0,ot:0,ded:0});
+  const rows=items.map(i=>{
+    const u=uById(i.userId);if(!u)return'';
+    const pv=prevItems.find(x=>x.userId===i.userId);
+    const varPct=pv&&pv.net?Math.round(((i.net-pv.net)/pv.net)*1000)/10:null;
+    const d2=i.detail||{};
+    return `<tr style="border-top:1px solid var(--c-border);${d2.hold?'opacity:.5':''}">
+      <td style="padding:8px 12px"><div style="display:flex;align-items:center;gap:8px">${avatar(u,'w-7 h-7','text-[10px]')}<div><div style="font-size:12.5px;font-weight:700;color:var(--c-text)">${esc(fullName(u))}${d2.hold?' <span style="font-size:9px;font-weight:800;color:#BE123C">HOLD</span>':''}</div><div style="font-size:10px;color:var(--c-text-3)">${esc(u.department||'')}</div></div></div></td>
+      <td style="padding:8px 6px;font-size:12px;text-align:right">${money(i.basic+i.allowances)}</td>
+      <td style="padding:8px 6px;font-size:12px;text-align:center">${d2.present||0}<span style="color:var(--c-text-3)">/${d2.working||0}</span>${d2.wfh?` <span style="font-size:9px;color:#0369A1">+${d2.wfh} WFH</span>`:''}</td>
+      <td style="padding:8px 6px;font-size:12px;text-align:center;color:${i.unpaidDays?'var(--c-danger-ink)':'var(--c-text-3)'}">${i.unpaidDays||0}</td>
+      <td style="padding:8px 6px;font-size:12px;text-align:right;color:${i.otAmount?'#0B7A55':'var(--c-text-3)'}">${i.otAmount?'+'+money(i.otAmount):'—'}</td>
+      <td style="padding:8px 6px;font-size:12.5px;font-weight:800;text-align:right;color:var(--c-text)">${money(i.net)}</td>
+      <td style="padding:8px 6px;font-size:11px;text-align:right;color:${varPct===null?'var(--c-text-3)':(Math.abs(varPct)<0.1?'var(--c-text-3)':(varPct>0?'#0B7A55':'#BE123C'))}">${varPct===null?'—':((varPct>0?'+':'')+varPct+'%')}</td>
+      <td style="padding:8px 6px;text-align:center">${run.status==='Draft'&&can('payroll','verify')?`<button onclick="App._payVerify('${i.id}')" title="Verify" style="width:24px;height:24px;border-radius:7px;border:1.5px solid ${i.verified?'#22C55E':'var(--c-border)'};background:${i.verified?'#ECFDF5':'transparent'};color:${i.verified?'#0B7A55':'var(--c-text-3)'};cursor:pointer;display:grid;place-items:center">${ic('check','w-3 h-3')}</button>`:(i.verified?`<span style="color:#0B7A55">${ic('check','w-3.5 h-3.5')}</span>`:'—')}</td>
+      <td style="padding:8px 10px;text-align:right"><button onclick="App._payslip('${i.id}')" class="ui-btn ui-btn-ghost ui-btn-sm" style="min-height:24px;padding:2px 10px;font-size:11px">Payslip</button></td>
+    </tr>`;
+  }).join('');
+  const allVerified=items.length&&items.every(i=>i.verified||(i.detail||{}).hold);
+  let actions='';
+  if(!run&&can('payroll','run'))actions=btnP('Create draft run — '+month,'App._payRun()','plus');
+  else if(run){
+    if(run.status==='Draft'&&can('payroll','verify')&&allVerified)actions=btn('Mark verified','App._payAdvance(\'Verified\')',{variant:'primary',icon:'check'});
+    else if(run.status==='Draft')actions='<span style="font-size:12px;color:var(--c-text-3);align-self:center">Verify every line (✓) to continue'+(can('payroll','run')?' · attendance up to the '+cutoff+' cut-off':'')+'</span>';
+    if(run.status==='Verified'&&can('payroll','approve'))actions=btn('Approve (Head of People)','App._payAdvance(\'Approved\')',{variant:'primary',icon:'check'});
+    if(run.status==='Approved'&&can('payroll','finalize'))actions=btn('Finalize payroll','App._payAdvance(\'Finalized\')',{variant:'brand',icon:'lock'});
+    if(can('payroll','download')&&(run.status==='Approved'||run.status==='Finalized'))actions+=btn('WPS / bank file','App._payWPS()',{variant:'ghost',icon:'doc'});
+    if(run.status!=='Finalized'&&can('payroll','rollback'))actions+=btn('Roll back','App._payRollback()',{variant:'danger',size:'sm'});
+    else if(run.status==='Finalized'&&can('payroll','rollback'))actions+=btn('Roll back (admin)','App._payRollback()',{variant:'danger',size:'sm'});
+  }
+  return `<div class="fade">${hdr('Payroll','Verify attendance → run → approve → finalize · payslips & WPS export','')}
+    <div class="ui-card" style="padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <input type="month" value="${month}" onchange="S.filters.pyMonth=this.value;rr()" class="ui-input" style="width:auto"/>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${steps}</div>
+      <span style="flex:1"></span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${actions}</div>
+    </div>
+    ${run?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      ${[['People',items.length],['Total net',money(totals.net)],['Overtime',money(totals.ot)],['Deductions',money(totals.ded)]].map(c=>`<div style="flex:1;min-width:120px;background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;padding:11px 13px"><div class="fd" style="font-size:17px;font-weight:800;color:var(--c-text)">${c[1]}</div><div style="font-size:11px;color:var(--c-text-2)">${c[0]}</div></div>`).join('')}
+    </div>
+    <div class="ui-card" style="padding:0;overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:820px">
+      <thead><tr style="text-align:left"><th style="padding:9px 12px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase">Person</th><th style="padding:9px 6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;text-align:right">Salary</th><th style="padding:9px 6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;text-align:center">Present</th><th style="padding:9px 6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;text-align:center">Unpaid d.</th><th style="padding:9px 6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;text-align:right">OT</th><th style="padding:9px 6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;text-align:right">Net</th><th style="padding:9px 6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;text-align:right">vs ${prev}</th><th style="padding:9px 6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;text-align:center">✓</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`
+    :`<div class="ui-card" style="padding:30px">${empty('chart','No run for '+month,can('payroll','run')?'Create a draft run — it computes salary, attendance, unpaid days and approved overtime for every active colleague (set salaries in Users → edit → HRM).':'A payroll run for this month hasn\'t been created yet.')}</div>`}
+  </div>`;
+}
+App._payRun=()=>{
+  if(!can('payroll','run'))return toast('You need Payroll → Run','err');
+  const month=S.filters.pyMonth||todayISO().slice(0,7);
+  if((DB.payrollRuns||[]).some(r=>r.month===month&&r.status!=='RolledBack'))return toast('A run already exists for '+month,'warn');
+  const run={id:uid('pr'),month,status:'Draft',cutoffDay:Number(DB.hrmConfig?.alerts?.payrollCutoff)||23,totals:{},sign:{},createdBy:S.uid,createdAt:new Date().toISOString()};
+  const people=DB.users.filter(u=>u.status==='Active'&&u.role!=='Admin');
+  const items=people.map(u=>{const c=_payCompute(u,month);return{id:uid('pi'),runId:run.id,userId:u.id,...c,verified:false,verifiedBy:null};});
+  run.totals={net:items.reduce((a,i)=>a+i.net,0),people:items.length};
+  DB.payrollRuns.push(run);items.forEach(i=>DB.payrollItems.push(i));
+  _pushRow('payroll_runs',_pRunRow(run),'payroll');items.forEach(i=>_pushRow('payroll_items',_pItemRow(i),'payroll'));
+  log(fullName(me()),'Payroll draft created',month+' · '+items.length+' people');
+  saveDB();toast('Draft run created — verify each line');rr();
+};
+App._payVerify=(itemId)=>{
+  if(!can('payroll','verify'))return toast('You need Payroll → Verify','err');
+  const i=(DB.payrollItems||[]).find(x=>x.id===itemId);if(!i)return;
+  i.verified=!i.verified;i.verifiedBy=i.verified?S.uid:null;
+  _pushRow('payroll_items',_pItemRow(i),'payroll');saveDB();rr();
+};
+App._payAdvance=(to)=>{
+  const need={Verified:'verify',Approved:'approve',Finalized:'finalize'}[to];
+  if(!can('payroll',need))return toast('You need Payroll → '+need,'err');
+  const month=S.filters.pyMonth;const run=(DB.payrollRuns||[]).find(r=>r.month===month&&r.status!=='RolledBack');if(!run)return;
+  run.status=to;run.sign=run.sign||{};
+  run.sign[need+'edBy']=S.uid;run.sign[need+'edAt']=new Date().toISOString();
+  _pushRow('payroll_runs',_pRunRow(run),'payroll');
+  log(fullName(me()),'Payroll '+to.toLowerCase(),month);
+  if(to==='Finalized')DB.users.filter(u=>u.status==='Active').forEach(u=>notify(u.id,'💰 Payroll for '+month+' is finalized — your payslip is ready','payroll','payroll'));
+  saveDB();toast('Payroll '+to.toLowerCase());rr();
+};
+App._payRollback=()=>{
+  if(!can('payroll','rollback'))return toast('You need Payroll → Roll back','err');
+  const month=S.filters.pyMonth;const run=(DB.payrollRuns||[]).find(r=>r.month===month&&r.status!=='RolledBack');if(!run)return;
+  if(!confirm('Roll back the '+month+' payroll run? Its lines are removed and a fresh draft can be created.'))return;
+  run.status='RolledBack';
+  DB.payrollItems=(DB.payrollItems||[]).filter(i=>i.runId!==run.id);
+  _pushRow('payroll_runs',_pRunRow(run),'payroll');
+  sb.from('payroll_items').delete().eq('run_id',run.id).then(()=>{}).catch(()=>{});
+  log(fullName(me()),'Payroll rolled back',month);
+  saveDB();toast('Run rolled back','warn');rr();
+};
+App._payslip=(itemId)=>{
+  const i=(DB.payrollItems||[]).find(x=>x.id===itemId);if(!i)return;
+  const u=uById(i.userId);const run=(DB.payrollRuns||[]).find(r=>r.id===i.runId);if(!u||!run)return;
+  const sal=u.hrm?.salary||{};const cur2=sal.currency||'AED';
+  const money=v=>cur2+' '+(Math.round(Number(v||0)*100)/100).toLocaleString();
+  const d2=i.detail||{};
+  const bal=(DB.leaveBalances||[]).filter(b=>b.userId===u.id).reduce((a,b)=>a+(Number(b.remaining)||0),0);
+  const row2=(k,v,b)=>'<tr><td style="padding:6px 0;color:#555">'+k+'</td><td style="text-align:right;font-weight:'+(b?'800':'600')+'">'+v+'</td></tr>';
+  const html='<div style="font-family:system-ui,sans-serif;white-space:normal">'
+    +'<p style="margin:0;color:#666">'+esc(u.position||'')+' · '+esc(u.department||'')+' · '+esc(run.month)+'</p>'
+    +'<table style="width:100%;border-collapse:collapse;margin-top:18px;font-size:14px">'
+    +row2('Basic salary',money(i.basic))+row2('Allowances',money(i.allowances))
+    +row2('Overtime ('+(d2.otHours||0)+'h)','+ '+money(i.otAmount))
+    +row2('Unpaid days ('+(i.unpaidDays||0)+' × '+money(d2.perDay||0)+')','− '+money(i.deductions))
+    +'<tr><td colspan="2" style="border-top:2px solid #222;padding-top:8px"></td></tr>'
+    +row2('NET PAY',money(i.net),true)
+    +'</table>'
+    +'<p style="margin-top:18px;font-size:12px;color:#666">Days: '+(d2.present||0)+' present ('+(d2.wfh||0)+' WFH) · '+(d2.leaveDays||0)+' on leave · '+(d2.absent||0)+' absent · working days '+(d2.working||0)+'<br>Leave balance remaining: '+bal+' day(s)'+(d2.hold?'<br><b style="color:#BE123C">PAYROLL HOLD ACTIVE (exit flow)</b>':'')+'</p>'
+    +'<p style="margin-top:22px;font-size:11px;color:#999">Generated by Bridge · '+esc(fmtD(todayISO()))+' · status: '+esc(run.status)+'</p></div>';
+  _printHTML('Payslip — '+fullName(u),html);
+};
+App._payWPS=()=>{
+  if(!can('payroll','download'))return toast('You need Payroll → Download','err');
+  const month=S.filters.pyMonth;const run=(DB.payrollRuns||[]).find(r=>r.month===month&&r.status!=='RolledBack');if(!run)return;
+  const items=(DB.payrollItems||[]).filter(i=>i.runId===run.id&&!(i.detail||{}).hold);
+  const rows=[['Employee ID','Name','IBAN','Basic','Allowances','Overtime','Deductions','Net Pay','Month','Currency']];
+  items.forEach(i=>{const u=uById(i.userId);if(!u)return;rows.push([u.id,fullName(u),u.hrm?.iban||'',i.basic,i.allowances,i.otAmount,i.deductions,i.net,month,(u.hrm?.salary?.currency)||'AED']);});
+  _csvDownload(rows,'WPS_'+month);
+  log(fullName(me()),'WPS file exported',month);
+};
+
+/* ── REPORTS HUB (inside HRM Analytics) ── */
+function _reportsHubHTML(){
+  const R=S.filters.rhKind||'absentee';
+  const kinds=[['absentee','Absentee (today)'],['sla','Leave SLA overdue'],['docexp','Document expiries'],['otpend','Overtime pending'],['wfh','WFH days (month)'],['status','Status changes']];
+  const d=todayISO();const month=d.slice(0,7);
+  let head=[],rows=[];
+  if(R==='absentee'){
+    head=['Person','Department','Reason unknown since'];
+    DB.users.filter(u=>u.status==='Active'&&u.role!=='Admin').forEach(u=>{
+      const sch=u.hrm?.schedule||{};if((sch.offDays||[]).includes(dayAbbr(d)))return;
+      if(_onLeaveToday(u.id,d))return;
+      const rec=(DB.attendance||[]).find(a=>a.userId===u.id&&a.date===d&&a.clockIn);
+      if(!rec)rows.push([fullName(u),u.department||'—',sch.in||'09:00']);
+    });
+  }else if(R==='sla'){
+    head=['Person','Requested','Working days pending','Type'];
+    (DB.leaveRequests||[]).filter(r=>r.status==='Pending').forEach(r=>{
+      const u=uById(r.userId);if(!u)return;
+      let wd=0,cur3=new Date(String(r.createdAt||'').slice(0,10)+'T00:00:00');const end=new Date(d+'T00:00:00');
+      while(cur3<end){cur3.setDate(cur3.getDate()+1);if(!['Sat','Sun'].includes(DAYS3[cur3.getDay()]))wd++;}
+      const lt=(DB.leaveTypes||[]).find(t=>t.id===r.leaveTypeId);
+      rows.push([fullName(u),fmtS(String(r.createdAt||'').slice(0,10)),wd,(lt||{}).name||'—']);
+    });
+    rows.sort((a,b)=>b[2]-a[2]);
+  }else if(R==='docexp'){
+    head=['Person','Document','Expires','Status'];
+    DB.users.filter(u=>u.status==='Active').forEach(u=>(u.hrm?.personalDocs||[]).forEach(doc=>{
+      if(doc.expiry)rows.push([fullName(u),doc.name,fmtS(doc.expiry),doc.expiry<d?'EXPIRED':'Upcoming']);
+    }));
+    rows.sort((a,b)=>String(a[2]).localeCompare(String(b[2])));
+  }else if(R==='otpend'){
+    head=['Person','Date','Hours','Reason'];
+    (DB.overtime||[]).filter(o=>o.status==='Pending').forEach(o=>{const u=uById(o.userId);rows.push([u?fullName(u):'—',fmtS(o.date),o.hours,o.reason]);});
+  }else if(R==='wfh'){
+    head=['Person','WFH days in '+month];
+    const byU={};(DB.attendance||[]).filter(a=>String(a.date).slice(0,7)===month&&(a.flags||[]).includes('WFH')).forEach(a=>{byU[a.userId]=(byU[a.userId]||0)+1;});
+    Object.keys(byU).forEach(k=>{const u=uById(k);rows.push([u?fullName(u):k,byU[k]]);});
+    rows.sort((a,b)=>b[1]-a[1]);
+  }else if(R==='status'){
+    head=['When','Who','What','Target'];
+    (DB.audit||[]).filter(l=>/user|role|deactivat|access/i.test(l.action||'')).slice(0,80).forEach(l=>rows.push([new Date(l.time).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}),l.actor,l.action,l.target||'—']));
+  }
+  const table=rows.length?`<div class="ui-card" style="padding:0;overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+    <thead><tr>${head.map(h=>`<th style="text-align:left;padding:9px 12px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase">${esc(String(h))}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r=>`<tr style="border-top:1px solid var(--c-border)">${r.map(c=>`<td style="padding:8px 12px;font-size:12.5px;color:var(--c-text)">${esc(String(c))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
+    :`<div class="ui-card" style="padding:24px">${empty('chart','Nothing to report','This report is empty right now — that\'s usually good news.')}</div>`;
+  return `<div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${kinds.map(k=>`<button class="ui-tab-pill${R===k[0]?' on':''}" onclick="S.filters.rhKind='${k[0]}';rr()">${k[1]}</button>`).join('')}
+      <span style="flex:1"></span>
+      ${rows.length&&can('reports','download')?btn('Export CSV',`App._rhCSV('${R}')`,{variant:'ghost',size:'sm',icon:'doc'}):''}
+    </div>
+    ${table}
+  </div>`;
+}
+App._rhCSV=(kind)=>{const el=document.querySelector('.fade table');if(!el)return;const rows=[...el.querySelectorAll('tr')].map(tr=>[...tr.querySelectorAll('th,td')].map(td=>td.textContent.trim()));_csvDownload(rows,'report_'+kind+'_'+todayISO());};
+
+/* ── HR Config: Alerts + Flow-template editors (rendered as hrmConfigPage tabs) ── */
+function _alertsCfgHTML(){
+  _seedHRMPlan();const A=DB.hrmConfig.alerts;const canEdit=can('hrSettings','edit');
+  const tog=(key,label,desc)=>`<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;border-radius:10px;border:1px solid var(--c-border);background:var(--c-surface);margin-bottom:7px;cursor:pointer">
+    <span><span style="display:block;font-size:13px;font-weight:700;color:var(--c-text)">${label}</span><span style="display:block;font-size:11px;color:var(--c-text-3)">${desc}</span></span>
+    <button type="button" ${canEdit?'':'disabled'} role="switch" aria-checked="${A[key]!==false}" class="tog ${A[key]!==false?'on':'off'}" onclick="DB.hrmConfig.alerts.${key}=DB.hrmConfig.alerts.${key}===false;saveDB();rr()"><span></span></button>
+  </label>`;
+  const num=(key,label,suffix)=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span style="flex:1;font-size:12.5px;color:var(--c-text-2)">${label}</span><input ${canEdit?'':'disabled'} type="number" min="1" step="any" value="${Number(A[key])||0}" onchange="DB.hrmConfig.alerts.${key}=parseFloat(this.value)||0;saveDB()" class="ui-input" style="width:86px;min-height:0;height:32px;padding:4px 10px"/><span style="font-size:11px;color:var(--c-text-3);width:64px">${suffix}</span></div>`;
+  return `<div class="ui-card" style="padding:16px">
+    <h3 class="fd" style="font-size:14px;font-weight:800;margin-bottom:4px">Alerts & event triggers</h3>
+    <p style="font-size:11.5px;color:var(--c-text-3);margin-bottom:12px">Checked once a day when an HR / manager / admin opens the app. Alerts go in-app to the reporting manager & People team, and are queued for email (outbox).</p>
+    ${tog('late','Late arrival','Clock-in after schedule + grace')}
+    ${tog('missedClockIn','No clock-in','Not clocked in an hour past the late threshold')}
+    ${tog('leaveSLA','Leave SLA breach','Pending leave older than the SLA escalates to RM & HoP')}
+    ${num('slaDays','Leave SLA','work days')}
+    ${tog('docExpiry','Document expiry','Visa / passport / contract expiry reminders')}
+    ${num('docExpiryDays','Warn ahead of expiry','days')}
+    ${tog('probation','Probation ending','Nudge RM & HoP to run the probation review')}
+    ${num('probationDays','Warn before probation end','days')}
+    ${tog('benefits','Air-ticket benefit','Anniversary entitlement reached')}
+    ${num('benefitMonths','Entitlement at','months')}
+    <div style="border-top:1px dashed var(--c-border);margin:12px 0 10px"></div>
+    ${num('otWeeklyCap','Overtime weekly cap','hours')}
+    ${num('otMultiplier','Overtime pay multiplier','×')}
+    ${num('payrollCutoff','Payroll cut-off day','of month')}
+  </div>`;
+}
+function _flowTplCfgHTML(){
+  _seedHRMPlan();const T=DB.hrmConfig.flowTemplates;const canEdit=can('hrSettings','edit');
+  const kind=S.filters.ftKind||'onboarding';
+  const rows=(T[kind]||[]).map((s2,i)=>`<div style="display:grid;grid-template-columns:2fr 110px 110px 120px 64px 28px;gap:6px;align-items:center;margin-bottom:6px">
+    <input ${canEdit?'':'disabled'} value="${esc(s2.title)}" onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].title=this.value;saveDB()" class="ui-input" style="min-height:0;height:32px;padding:4px 10px;font-size:12px"/>
+    <select ${canEdit?'':'disabled'} onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].ownerType=this.value;saveDB();rr()" class="ui-select" style="min-height:0;height:32px;font-size:11.5px;padding:4px 22px 4px 8px">${['hr','manager','dept'].map(o=>`<option ${s2.ownerType===o?'selected':''}>${o}</option>`).join('')}</select>
+    <input ${canEdit&&s2.ownerType==='dept'?'':'disabled'} value="${esc(s2.dept||'')}" placeholder="Dept name" onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].dept=this.value;saveDB()" class="ui-input" style="min-height:0;height:32px;padding:4px 10px;font-size:12px"/>
+    <select ${canEdit?'':'disabled'} onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].type=this.value;saveDB()" class="ui-select" style="min-height:0;height:32px;font-size:11.5px;padding:4px 22px 4px 8px">${['task','form','letter','payrollHold'].map(o=>`<option ${s2.type===o?'selected':''}>${o}</option>`).join('')}</select>
+    <input ${canEdit?'':'disabled'} type="number" min="0" value="${Number(s2.offsetDays)||0}" title="Due after N days" onchange="DB.hrmConfig.flowTemplates['${kind}'][${i}].offsetDays=parseInt(this.value)||0;saveDB()" class="ui-input" style="min-height:0;height:32px;padding:4px 8px;font-size:12px"/>
+    ${canEdit?`<button onclick="DB.hrmConfig.flowTemplates['${kind}'].splice(${i},1);saveDB();rr()" style="width:26px;height:26px;border:none;background:transparent;color:var(--c-text-3);cursor:pointer">${ic('trash','w-3.5 h-3.5')}</button>`:'<span></span>'}
+  </div>`).join('');
+  return `<div class="ui-card" style="padding:16px">
+    <h3 class="fd" style="font-size:14px;font-weight:800;margin-bottom:10px">Lifecycle flow templates</h3>
+    <div class="ui-tabs" style="margin-bottom:12px">${['onboarding','probation','exit'].map(k=>`<button class="ui-tab${kind===k?' on':''}" onclick="S.filters.ftKind='${k}';rr()">${k[0].toUpperCase()+k.slice(1)}</button>`).join('')}</div>
+    <div style="display:grid;grid-template-columns:2fr 110px 110px 120px 64px 28px;gap:6px;font-size:10px;font-weight:800;color:var(--c-text-3);text-transform:uppercase;margin-bottom:5px"><span>Step</span><span>Owner</span><span>Dept</span><span>Type</span><span>+days</span><span></span></div>
+    ${rows||'<p style="font-size:12px;color:var(--c-text-3)">No steps yet.</p>'}
+    ${canEdit?`<button onclick="DB.hrmConfig.flowTemplates['${kind}'].push({title:'New step',ownerType:'hr',type:'task',offsetDays:0,dept:''});saveDB();rr()" class="ui-btn ui-btn-ghost ui-btn-sm" style="margin-top:6px">${ic('plus','w-3.5 h-3.5')}Add step</button>`:''}
+  </div>`;
+}
+App._pdExpiry=(uid2,docId,val)=>{
+  const u=uById(uid2);if(!u)return;
+  const d=(u.hrm?.personalDocs||[]).find(x=>x.id===docId);if(!d)return;
+  d.expiry=val||null;
+  log(fullName(me()),'Document expiry set',d.name+' · '+(val||'cleared'));
+  saveDB();toast(val?'Expiry saved — reminders will fire ahead of it':'Expiry cleared');
+};
+
 /* ===== LOGIN ===== */
 function loginView(){return`<div class="min-h-screen flex" style="background:var(--c-bg)">
   <div class="hidden lg:flex flex-col justify-between" style="width:44%;background:linear-gradient(160deg,#1C212B 0%,#13161D 100%);color:#fff;padding:56px;position:relative;overflow:hidden">
@@ -2799,7 +3667,7 @@ function adminDash(){
   const late=fSubs.filter(s=>s.status==='Late').length;
   const depts=DB.departments.map(d=>{const us=DB.users.filter(u=>u.department===d.name).length;const cls=DB.checklists.filter(c=>c.department===d.name).length;const ss=fSubs.filter(s=>{const c=clById(s.checklistId);return c?.department===d.name;});return{name:d.name,us,cls,total:ss.length,onTime:ss.filter(s=>s.status==='On Time').length,late:ss.filter(s=>s.status==='Late').length};}).filter(d=>d.us||d.cls);
   const recent=fSubs.slice().sort((a,b)=>(b.submittedAt||'').localeCompare(a.submittedAt||'')).slice(0,8);
-  return`<div class="fade">${hdr('Dashboard',new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}))}
+  return`<div class="fade">${_whoIsInWidget()}${hdr('Dashboard',new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}))}
   ${_dashFilterBar()}
   <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
     ${statCard('Active users',active,'sky',"App.go('users')")}${statCard('Pending approvals',pendA,'amber',"App.go('approvals')")}${statCard('Late submissions',late,'rose',"S.filters={stats:['Late']};App.go('dashboard')")}
@@ -2863,7 +3731,7 @@ function mgrDash(){
   };
   const rows=[...team.map(u=>mkRow(u,true)),...former.map(u=>mkRow(u,false))].filter(Boolean);
   const curRows=rows.filter(r=>r.cur);
-  return`<div class="fade">${hdr('Team Dashboard',team.length+' member'+(team.length!==1?'s':''))}
+  return`<div class="fade">${_whoIsInWidget()}${hdr('Team Dashboard',team.length+' member'+(team.length!==1?'s':''))}
   ${_dashFilterBar()}
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
     ${statCard('Team members',team.length,'sky',"App.go('teamview')")}${statCard('Late submissions',rows.reduce((n,r)=>n+r.late,0),'rose',"S.filters={stats:['Late']};App.go('dashboard')")}${statCard('Avg completion',Math.round(curRows.reduce((n,r)=>n+r.pct,0)/Math.max(curRows.length,1))+'%','brand',"App.go('dashboard')")}
@@ -2920,6 +3788,10 @@ function _hrmUserSection(u){
     <div>${selF('Work week','u-ww',[['5','5-day week'],['6','6-day week']],String(s.workWeek||5))}</div>
     ${selF('Office location (geofence)','u-loc',[['','— None —'],...DB.locations.filter(l=>l.status==='Active').map(l=>[l.id,l.name])],h.locationId||'')}
     <div><label class="block text-xs font-semibold text-ink-500 mb-1.5">Weekly off-days</label><div style="display:flex;gap:6px;flex-wrap:wrap">${DAYS3.map(d=>`<button type="button" class="dchip${off.has(d)?' on':''}" onclick="this.classList.toggle('on')" data-day="${d}">${d}</button>`).join('')}</div></div>
+    ${fld('Probation ends','u-probend',h.probationEnd||'','date')}
+    ${can('payroll','view')?`<div style="border-top:1px dashed #E5E7EB;padding-top:10px"><p class="text-[10px] font-bold text-ink-400 uppercase tracking-wide mb-2">Payroll (visible to payroll roles only)</p>
+      <div class="grid grid-cols-3 gap-3">${fld('Basic salary','u-salb',(h.salary||{}).basic??0,'number')}${fld('Allowances','u-sala',(h.salary||{}).allow??0,'number')}${fld('Currency','u-salc',(h.salary||{}).currency||'AED')}</div>
+      <div class="mt-2">${fld('IBAN (for the WPS / bank file)','u-iban',h.iban||'')}</div></div>`:''}
   </div>`;
   /* perms v2: the HR toggle + role-profile picker moved to the Access Control tab. */
 }
@@ -2937,6 +3809,10 @@ function _readHrmFromForm(prev){
     schedule:{in:g('u-cin')||'09:00',out:g('u-cout')||'18:00',hours:Number(g('u-chrs'))||9,workWeek:Number($('#u-ww')?.value)||5,offDays:offDays.length?offDays:[]},
     profileId:$('#u-prof')?.value||(DB.hrmConfig?.activeProfile||'UAE'),
     roleProfileId:p.roleProfileId||null,
+    probationEnd:$('#u-probend')?($('#u-probend').value||null):(p.probationEnd??null),
+    salary:$('#u-salb')?{basic:parseFloat($('#u-salb').value)||0,allow:parseFloat($('#u-sala')?.value)||0,currency:($('#u-salc')?.value||'AED').trim()||'AED'}:(p.salary||{basic:0,allow:0,currency:'AED'}),
+    iban:$('#u-iban')?($('#u-iban').value||'').trim():(p.iban||''),
+    payrollHold:p.payrollHold===true,
     perms:(p.perms&&typeof p.perms==='object')?p.perms:undefined,
     permsBaked:p.permsBaked||0,
     reportPerms:(p.reportPerms&&typeof p.reportPerms==='object')?p.reportPerms:undefined
@@ -2975,6 +3851,7 @@ function _personalDocsSection(u){
       +'<span style="display:grid;place-items:center;color:#6B7280;flex-shrink:0">'+icon+'</span>'
       +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+esc(d.name)+'</div>'
       +'<div style="font-size:11px;color:#9CA3AF">'+esc((d.type||'file').split('/').pop()||'file')+' · '+_fmtSize(d.size)+' · '+fmtD((d.uploadedAt||'').slice(0,10))+(gone?' · <span style="color:#B45309">not on this device</span>':'')+'</div></div>'
+      +'<input type="date" title="Expiry date (visa / passport / contract) — reminders fire ahead of it" value="'+esc(d.expiry||'')+'" onchange="App._pdExpiry(\''+u.id+'\',\''+d.id+'\',this.value)" style="font-size:11px;border:1px solid '+((d.expiry&&d.expiry<todayISO())?'#FCA5A5':'#E5E7EB')+';border-radius:8px;padding:4px 6px;background:#fff;color:'+((d.expiry&&d.expiry<todayISO())?'#DC2626':'#374151')+';flex-shrink:0"/>'
       +(canDl&&!gone?'<button type="button" onclick="App._openPersonalDoc(\''+u.id+'\',\''+d.id+'\')" style="padding:5px 10px;border-radius:8px;border:1px solid #E5E7EB;background:#fff;font-size:12px;font-weight:600;cursor:pointer">Open</button>':'')
       +(canDel?'<button type="button" onclick="App._delPersonalDoc(\''+u.id+'\',\''+d.id+'\')" style="width:28px;height:28px;display:grid;place-items:center;border-radius:8px;border:none;background:#FEF2F2;color:#DC2626;cursor:pointer;flex-shrink:0">'+ic('trash','w-3.5 h-3.5')+'</button>':'')
       +'</div>';
@@ -4288,6 +5165,8 @@ function homeDash(){
   return `<div class="fade">
     <div style="margin-bottom:18px"><h1 class="fd" style="font-size:var(--fs-h1);font-weight:800;letter-spacing:-.6px;color:var(--c-text)">${greet}, ${esc(u.firstName||fullName(u))}</h1><p style="font-size:14px;color:var(--c-text-2);margin-top:3px">${new Date().toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})}</p></div>
     ${_clockWidget()}
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin:-6px 0 14px">${(()=>{const rec=(DB.attendance||[]).find(a=>a.userId===S.uid&&a.date===todayISO());const on=!!(rec&&(rec.flags||[]).includes('WFH'));return `<button onclick="App._togWFH()" style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;border:1.5px solid ${on?'#0EA5E9':'var(--c-border)'};background:${on?'#EFF6FF':'var(--c-surface)'};color:${on?'#0369A1':'var(--c-text-2)'};font-size:12px;font-weight:700;cursor:pointer">🏠 ${on?'Working from home today':'Mark today as WFH'}</button>`;})()}</div>
+    ${(isMgr()||can('teamview','view'))?_whoIsInWidget():''}
     ${tiles?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">${tiles}</div>`:''}
     <div class="grid md:grid-cols-2 gap-4 items-start" style="margin-bottom:16px">${clCard}${leaveCard}${okrHomeCard}</div>
     ${_hHasData?`<div class="grid md:grid-cols-2 gap-4 items-start" style="margin-bottom:16px">
@@ -5180,8 +6059,9 @@ const _APPR_META={
   submission: {icon:'check',    label:'Submissions', chip:'Submissions'},
   edit:       {icon:'edit',     label:'Edits',       chip:'Edits'},
   document:   {icon:'doc',      label:'Documents',   chip:'Documents'},
+  overtime:   {icon:'clock',    label:'Overtime',    chip:'Overtime'},
 };
-const _APPR_ORDER=['leave','submission','edit','document'];
+const _APPR_ORDER=['leave','submission','edit','document','overtime'];
 function unifiedApprovalsPage(){
   const all=_approvalInbox();
   // Status sub-tabs: Pending / Approved / Rejected. Default Pending (the actionable view).
@@ -5231,11 +6111,15 @@ function _inboxRow(x){
     ? "App._inboxDecide('"+esc(x.id)+"','approve')"
     : x._src.coll==='documents'
     ? "App._decideDoc('"+esc(x._src.id)+"','approve')"
+    : x._src.coll==='overtime'
+    ? "App._otDecide('"+esc(x._src.id)+"','approve','pay')"
     : "App._decideApprove('"+esc(x._src.id)+"')";
   const rejectCall=x._src.coll==='leaveRequests'
     ? "App._inboxDecide('"+esc(x.id)+"','reject')"
     : x._src.coll==='documents'
     ? "App._decideDoc('"+esc(x._src.id)+"','reject')"
+    : x._src.coll==='overtime'
+    ? "App._otDecide('"+esc(x._src.id)+"','reject')"
     : "App._decideReject('"+esc(x._src.id)+"')";
   return '<div class="ui-card" style="padding:16px">'
     +'<div onclick="App._inboxOpen(\''+esc(x.id)+'\')" style="display:flex;align-items:flex-start;gap:12px;cursor:pointer">'
@@ -5261,6 +6145,7 @@ App._setApprTab=(t)=>{S.filters.atab=t;S.filters.inboxType='all';rr();};
 // Open type-specific detail reusing existing renderers.
 App._inboxOpen=(iid)=>{
   const x=_approvalInbox().find(i=>i.id===iid);if(!x)return;
+  if(x.type==='overtime'){App.closeModal&&App.closeModal();App.go('overtime');return;}
   if(x.type==='leave'){
     const r=x.payload;const emp=uById(r.userId);const lt=ltById(r.leaveTypeId);
     const b=_balanceReadonly(r.userId,r.leaveTypeId,_leaveYearOf(emp,r.start));
@@ -5449,6 +6334,8 @@ App._viewSubFor=async(btn)=>{
         // CRITICAL: Always load from Supabase FIRST before any sync
         // This prevents empty local state from overwriting real server data
         await loadFromSB();
+        _seedHRMPlan();
+        try{_runEventTriggers();}catch(e){console.warn('[triggers]',e.message);}
         _hrmInit();
         saveDB();
         render();
@@ -9138,7 +10025,22 @@ function _approvalInbox(){
       _src:{coll:'documents',id:d.id}
     });
   });
-  // (OKR period-close approvals retired with OKR v2 — progress freezes are no longer approval items.)
+  // (e) OVERTIME — pending entries for people in my overtime scope (approve = pay by default;
+  //     open the Overtime page for the time-in-lieu option).
+  if(can('overtime','approve')){
+    const fOT=scopeFilter('overtime');
+    (DB.overtime||[]).forEach(o=>{
+      if(o.userId===S.uid)return;
+      const st=o.status==='Approved'?'Approved':o.status==='Rejected'?'Rejected':'Pending';
+      if(st==='Pending'&&!fOT(o.userId))return;
+      if(st!=='Pending'&&o.decidedBy!==S.uid&&!fOT(o.userId))return;
+      const u=uById(o.userId);
+      items.push({id:'ot-'+o.id,type:'overtime',requestedBy:o.userId,assignedTo:null,
+        subject:(u?fullName(u):'—')+' · '+o.hours+'h on '+fmtS(o.date),
+        payload:{...o,createdAt:o.createdAt},status:st,decidedBy:o.decidedBy||null,decidedAt:o.decidedAt||null,
+        location:'',dept:u?.department||'',_src:{coll:'overtime',id:o.id}});
+    });
+  }
     // (SOP and Expense approval mappers removed — those features were retired.)
   return items;
 }
@@ -9503,7 +10405,7 @@ function _leaveDaysInRange(r,d1,d2){
 /* ════════ HR CONFIG PAGE ════════ */
 function hrmConfigPage(){
   _seedProfiles();
-  const TABS=[['policy','Timing & accrual'],['types','Leave Types'],['holidays','Holidays']];
+  const TABS=[['policy','Timing & accrual'],['types','Leave Types'],['holidays','Holidays'],['alerts','Alerts & triggers'],['flows','Flow templates']];
   // §3a/§3b: balance-management tabs, gated by the leave-balances permission (shim → HR/Admin).
   if(can('leaveBalances','edit'))TABS.push(['bulk','Bulk Balances']);
   if(can('leaveBalances','grant'))TABS.push(['compoff','Comp-off']);
@@ -9514,6 +10416,8 @@ function hrmConfigPage(){
   const profId=DB.hrmConfig.activeProfile||'UAE';
   const prof=DB.hrmConfig.profiles[profId]||{};
   let body='';
+  if(tab==='alerts')body=_alertsCfgHTML();
+  if(tab==='flows')body=_flowTplCfgHTML();
   if(tab==='policy'){
     const canEdit=can('hrSettings','edit');
     body=`<div class="space-y-4">
@@ -10176,6 +11080,10 @@ App.saveLeaveType=(id)=>{
 /* ════════ HRM ANALYTICS PAGE ════════ */
 function hrmAnalyticsPage(){
   const f=S.filters;
+  // Reports hub (build plan Phase 0): one place for absentee / SLA / expiry / OT / WFH / status reports.
+  const hraTab=f.hraTab||'dash';
+  const _hraTabs=`<div class="ui-tabs" style="margin-bottom:14px"><button class="ui-tab${hraTab==='dash'?' on':''}" onclick="S.filters.hraTab='dash';rr()">Dashboard</button><button class="ui-tab${hraTab==='reports'?' on':''}" onclick="S.filters.hraTab='reports';rr()">Reports</button></div>`;
+  if(hraTab==='reports')return `<div class="fade">${hdr('HRM Analytics','One reports hub — filters + one-click CSV export')}${_hraTabs}${_reportsHubHTML()}</div>`;
   // §1.8 step 5: data scope honors the resolver's `reports` scope (mirrors attendancePage).
   // scopedUsers('reports') already implements self/team/department/location/everyone and keeps
   // other Super Admins out of HR reports for non-admins (scopeFilter line ~799). Unassigned users
